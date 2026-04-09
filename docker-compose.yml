@@ -1,0 +1,159 @@
+version: "3.8"
+
+services:
+  # ── Infrastructure ──
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ronexa
+      POSTGRES_PASSWORD: dev_password
+      POSTGRES_DB: ronexa
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ronexa"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  restate:
+    image: docker.io/restatedev/restate:1.6
+    ports:
+      - "8080:8080"   # Ingress
+      - "9070:9070"   # Admin
+    volumes:
+      - restate-data:/target/restate-data
+
+  # ── Backend ──
+
+  backend-api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://ronexa:dev_password@postgres:5432/ronexa
+      REDIS_URL: redis://redis:6379
+      RESTATE_URL: http://restate:8080
+      RESTATE_ADMIN_URL: http://restate:9070
+      MONGO_URI: ${MONGO_URI:-}
+      MONGO_DB: ${MONGO_DB:-workflowdb}
+      MONGO_COLLECTION: ${MONGO_COLLECTION:-auth-submissions}
+      AZURE_BLOB_CONNECTION_STRING: ${AZURE_BLOB_CONNECTION_STRING:-}
+      AZURE_BLOB_CONTAINER: ${AZURE_BLOB_CONTAINER:-carelon-attachments}
+      AZURE_DOC_INTELLIGENCE_ENDPOINT: ${AZURE_DOC_INTELLIGENCE_ENDPOINT:-}
+      AZURE_DOC_INTELLIGENCE_KEY: ${AZURE_DOC_INTELLIGENCE_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ENVIRONMENT: docker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker-1:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.worker
+    ports:
+      - "9080:9080"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://ronexa:dev_password@postgres:5432/ronexa
+      REDIS_URL: redis://redis:6379
+      RESTATE_URL: http://restate:8080
+      RESTATE_ADMIN_URL: http://restate:9070
+      CARELON_USERNAME: ${CARELON_USERNAME_1:-}
+      CARELON_PASSWORD: ${CARELON_PASSWORD_1:-}
+      CARELON_BASE_URL: ${CARELON_BASE_URL:-https://www.providerportal.com}
+      MFA_TENANT_ID: ${MFA_TENANT_ID:-}
+      MFA_CLIENT_ID: ${MFA_CLIENT_ID:-}
+      MFA_CLIENT_SECRET: ${MFA_CLIENT_SECRET:-}
+      MFA_MAILBOX: ${MFA_MAILBOX_1:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      WORKER_ID: worker-1
+      BROWSER_PROFILE_DIR: /data/browser-profiles
+      ENVIRONMENT: docker
+    volumes:
+      - worker1-profiles:/data/browser-profiles
+    depends_on:
+      - backend-api
+      - restate
+
+  worker-2:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.worker
+    ports:
+      - "9081:9080"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://ronexa:dev_password@postgres:5432/ronexa
+      REDIS_URL: redis://redis:6379
+      RESTATE_URL: http://restate:8080
+      RESTATE_ADMIN_URL: http://restate:9070
+      CARELON_USERNAME: ${CARELON_USERNAME_2:-}
+      CARELON_PASSWORD: ${CARELON_PASSWORD_2:-}
+      CARELON_BASE_URL: ${CARELON_BASE_URL:-https://www.providerportal.com}
+      MFA_TENANT_ID: ${MFA_TENANT_ID:-}
+      MFA_CLIENT_ID: ${MFA_CLIENT_ID:-}
+      MFA_CLIENT_SECRET: ${MFA_CLIENT_SECRET:-}
+      MFA_MAILBOX: ${MFA_MAILBOX_2:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      WORKER_ID: worker-2
+      BROWSER_PROFILE_DIR: /data/browser-profiles
+      ENVIRONMENT: docker
+    volumes:
+      - worker2-profiles:/data/browser-profiles
+    depends_on:
+      - backend-api
+      - restate
+
+  # ── Frontends ──
+
+  auth-ops-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        API_URL: http://backend-api:8000
+    ports:
+      - "3000:3000"
+    environment:
+      API_URL: http://backend-api:8000
+    depends_on:
+      - backend-api
+
+  # ── Reverse Proxy ──
+
+  nginx:
+    build:
+      context: ./infra/nginx
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+    depends_on:
+      - backend-api
+      - auth-ops-frontend
+
+volumes:
+  pgdata:
+  restate-data:
+  worker1-profiles:
+  worker2-profiles:

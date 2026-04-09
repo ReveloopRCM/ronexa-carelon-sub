@@ -1,0 +1,471 @@
+{
+  "portal_id": "carelon_provider_portal",
+  "portal_name": "Carelon Provider Portal",
+  "portal_url": "https://www.providerportal.com",
+  "version": "1.0.0",
+
+  "auth": {
+    "type": "okta_idx",
+    "okta_domain_env": "CARELON_BASE_URL",
+    "client_id_env": "OKTA_CLIENT_ID",
+    "username_env": "CARELON_USERNAME",
+    "password_env": "CARELON_PASSWORD",
+    "mfa": {
+      "type": "graph_api",
+      "mailbox_env": "GRAPH_MAILBOX",
+      "poll_interval_ms": 3000,
+      "max_attempts": 20,
+      "subject_pattern": "One-time verification code",
+      "otp_regex": "\\d{6}"
+    },
+    "post_login_steps": [
+      {
+        "action": "wait",
+        "wait_ms": 3000,
+        "description": "Wait for post-login redirect"
+      },
+      {
+        "action": "click",
+        "selector": "#asPrimary_ctl00_cmdAgreeContinue",
+        "description": "Click 'I Agree' on terms page"
+      }
+    ]
+  },
+
+  "bot_detection": {
+    "name": "akamai",
+    "api_calls_exempt": true,
+    "page_loads_monitored": true,
+    "retry_on_challenge": true,
+    "max_challenge_retries": 3
+  },
+
+  "intelligence": {
+    "decide": {
+      "model_env": "evaluation",
+      "max_tokens": 500,
+      "temperature": 0.1,
+      "rag": {
+        "enabled": true,
+        "top_k": 5,
+        "min_similarity": 0.75,
+        "pre_filter_fields": ["cpt_code", "carrier_id"]
+      }
+    }
+  },
+
+  "okta_idx_flow": {
+    "_comment": "Okta Identity Engine PKCE flow — HAR-validated from 3 submissions",
+    "okta_domain": "login.mbm.partners.carelon.com",
+    "client_id": "0oa97idukvkwwIVul4h7",
+    "scopes": "openid profile offline_access",
+    "redirect_uri": "https://www.providerportal.com/interaction-code/callback",
+    "callback_page": "/InteractionCode.aspx",
+    "authenticator_id": "aut5t66pqwcf91LGc4h7",
+    "mfa_method": "email",
+    "endpoints": {
+      "interact": "/oauth2/v1/interact",
+      "introspect": "/idp/idx/introspect",
+      "identify": "/idp/idx/identify",
+      "challenge_answer": "/idp/idx/challenge/answer",
+      "challenge": "/idp/idx/challenge",
+      "session_check": "/api/v1/sessions/me"
+    },
+    "login_page": {
+      "email_field": "#asPrimary_ctl00_txtLoginId",
+      "remember_me": "#asPrimary_ctl00_chkRememberMe",
+      "next_button": "#asPrimary_ctl00_btnLookup",
+      "session_token_hidden": "#hiddenSessionTokenField",
+      "return_to_login": "#asPrimary_ctl00_btnReturnToLogin"
+    }
+  },
+
+  "selectors": {
+    "_comment": "HAR-validated CSS selectors from 3 recorded submissions (1105+1316+1535 entries)",
+
+    "login": {
+      "email_field": "#asPrimary_ctl00_txtLoginId",
+      "remember_me_checkbox": "#asPrimary_ctl00_chkRememberMe",
+      "next_button": "#asPrimary_ctl00_btnLookup",
+      "agree_button": "#asPrimary_ctl00_cmdAgreeContinue",
+      "session_token_hidden": "#hiddenSessionTokenField",
+      "wait_eventtarget": "Wait",
+      "browser_info_hidden": "#browserInfo"
+    },
+
+    "member_search": {
+      "date_of_service": "#asPrimary_ctl00_txtDateOfService",
+      "first_name": "#asPrimary_ctl00_TxbFirstName",
+      "last_name": "#asPrimary_ctl00_TxbLastName",
+      "member_number": "#asPrimary_ctl00_TxbMemberNumber",
+      "date_of_birth": "#asPrimary_ctl00_TxbDateOfBirth",
+      "cpt_code": "#asPrimary_ctl00_TxbCptCode",
+      "find_member_button": "#asPrimary_ctl00_BtnSearch",
+      "calendar_icon": "[id$='CalendarDateOfService_ibCalendar']",
+      "calendar_widget": "[id$='CalendarDateOfService_calCalendar']",
+      "results_grid": "#asPrimary_ctl00_gvSearchMembers",
+      "select_member_link_pattern": "asPrimary$ctl00$gvSearchMembers$ctl{row}$cmdSelectMember"
+    },
+
+    "start_order": {
+      "selected_type_hidden": "#asPrimary_ctl00_hdnSelectedType",
+      "phone_field": "#txbPhone",
+      "phone_type_dropdown": "#ddlPhoneType",
+      "email_field": "#EmailAddressTextBox",
+      "start_order_button": "#cmdContinue",
+      "save_button_hidden": "[name='asPrimary$ctl00$savebutton']",
+      "diagnostic_imaging_value": "RbDiagnosticImaging"
+    },
+
+    "existing_auths": {
+      "exams_grid": "#asPrimary_ctl00_gvMemberExams",
+      "next_button": "#asPrimary_ctl00_cmdNext"
+    },
+
+    "provider_search": {
+      "search_type_tin_npi_radio": "#asSearch_ctl00_rbSearchType_1",
+      "search_type_name_radio": "#asSearch_ctl00_rbSearchType_0",
+      "search_type_address_radio": "#asSearch_ctl00_rbSearchType_2",
+      "npi_option_radio": "#asSearch_ctl00_rbTINorNPIOption_1",
+      "tin_option_radio": "#asSearch_ctl00_rbTINorNPIOption_0",
+      "npi_tin_field": "#asSearch_ctl00_tbTINNPI",
+      "last_name": "#asSearch_ctl00_tbLastName",
+      "first_name": "#asSearch_ctl00_tbFirstName",
+      "address": "#asSearch_ctl00_tbAddress",
+      "city": "#asSearch_ctl00_tbCity",
+      "state_dropdown": "#asSearch_ctl00_ddlState",
+      "zip": "#asSearch_ctl00_tbZip",
+      "search_button": "#asSearch_ctl00_btnSearch",
+      "clear_button": "#asSearch_ctl00_btnClear",
+      "selected_physician_hidden": "#asPrimary_ctl00_SelectedPhysician",
+      "results_grid": "#asPrimary_ctl00_gvSearchProviders",
+      "select_provider_link_pattern": "asPrimary$ctl00$gvSearchProviders$ctl{row}$lnkBtnName",
+      "fax_field": "#asPrimary_ctl00_txbFax"
+    },
+
+    "facility_search": {
+      "advanced_search_link": "#asSearch_ctl00_lbProviderSearchAdvanced",
+      "advanced_search_eventtarget": "asSearch$ctl00$lbProviderSearchAdvanced",
+      "facility_name": "#asSearch_ctl00_tbFacilityName",
+      "npi_field": "#asSearch_ctl00_tbNPI",
+      "city": "#asSearch_ctl00_tbCity",
+      "state_dropdown": "#asSearch_ctl00_ddlState",
+      "zip": "#asSearch_ctl00_tbZip",
+      "find_button": "#asSearch_ctl00_btnSearch",
+      "clear_button": "#asSearch_ctl00_btnClear",
+      "results_grid": "#asPrimary_ctl00_gvSearchProviders",
+      "select_facility_link_pattern": "asPrimary$ctl00$gvSearchProviders$ctl{row}$cmdSelectFacility1",
+      "continue_button": "#asPrimary_ctl00_btnContinue",
+      "fax_entered_hidden": "#asPrimary_ctl00_hdnFaxEntered",
+      "fax_mandatory_hidden": "#asPrimary_ctl00_hdnFaxMandatory",
+      "oon_attestation_yes": "#asPrimary_ctl00_RbOONAttestationYes",
+      "oon_attestation_no": "#asPrimary_ctl00_RbOONAttestationNo"
+    },
+
+    "submission": {
+      "submit_button": "#asPrimary_ctl00_cmdSubmitRequest",
+      "comments_textarea": "#asPrimary_ctl00_txtComments",
+      "email_field": "#asPrimary_ctl00_txtEmail",
+      "claim_date": "#asPrimary_ctl00_pcca1_txtClaimDate",
+      "claim_number": "#asPrimary_ctl00_pcca1_txtClaimNumber",
+      "claim_received_date": "#asPrimary_ctl00_pcca1_txtClaimReceivedDate",
+      "delete_request_button": "#asPrimary_ctl00_cmdDeleteRequest",
+      "go_to_homepage_button": "#asNavigation_ctl00_hlHome",
+      "go_to_homepage_postback": "__doPostBack('TopMenu','')",
+      "begin_new_request_button": "#asPrimary_ctl00_btnBeginRequest"
+    },
+
+    "confirmation": {
+      "order_id": "#asPrimary_ctl00_lblRequestNumberSumm",
+      "status": "#asPrimary_ctl00_lblReqStatSumm",
+      "valid_from": "#asPrimary_ctl00_lblValidDateFromSumm",
+      "valid_through": "#asPrimary_ctl00_lblValidDateToSumm",
+      "health_plan": "#asPrimary_ctl00_lblHealthPl1Summ",
+      "date_of_service": "#asPrimary_ctl00_lblDOSSumm",
+      "member_last_name": "#asPrimary_ctl00_lblLastName",
+      "member_first_name": "#asPrimary_ctl00_lblMemberFirstName",
+      "member_number_prefix": "#asPrimary_ctl00_lblPreFix",
+      "member_number": "#asPrimary_ctl00_lblMemberNum",
+      "member_dob": "#asPrimary_ctl00_lblDOB",
+      "provider_last_name": "#asPrimary_ctl00_lblPhysLastName",
+      "provider_first_name": "#asPrimary_ctl00_lblPhysFirstName",
+      "provider_npi": "#asPrimary_ctl00_PhysNPI",
+      "facility_name": "#asPrimary_ctl00_lblProvName",
+      "facility_npi": "#asPrimary_ctl00_ProvNPI",
+      "facility_tin": "#asPrimary_ctl00_ProvTIN",
+      "save_pdf_button": "#asPrimary_ctl00_cmdSavePdf",
+      "print_button": "#asPrimary_ctl00_btnPrint",
+      "review_exam_pattern": "#asPrimary_ctl00_rptExamClinical_ctl{row}_cmdReviewExam"
+    }
+  },
+
+  "clinical_facade_api": {
+    "_comment": "ClinicalFacade.aspx JSON SPA endpoints — all via in-page fetch()",
+    "base_path": "/ClinicalFacade.aspx",
+
+    "initialization": [
+      {"method": "GetClientMessages", "payload": {"messageCodes": [13, 16, 41]}},
+      {"method": "GetCase", "payload": {"id": "0"}},
+      {"method": "PrimaryCptCodeSearchBoxEnable", "payload": {}},
+      {"method": "ShouldWithdrawButtonDisplayed", "payload": {}}
+    ],
+
+    "exam_setup": {
+      "get_body_side_part": {"method": "GetCptCodeBodySidePart", "payload_template": {"cptCode": "${case.cpt_code}", "dateOfService": "${date_of_service}"}},
+      "get_cpt_code": {"method": "GetCptCode", "payload_template": {"cptCode": "${case.cpt_code}", "dateOfService": "${date_of_service}", "selectedCptGrouperId": "${cpt_group_id}"}},
+      "retrieve_body_side_popover": {"method": "RetrieveTextFromPRE", "payload_template": {"personalizationType": "RbmBodySidePopoverHtml", "cptCode": "${case.cpt_code}", "cptGroupId": 0, "ZipCode": null}},
+      "retrieve_body_part_popover": {"method": "RetrieveTextFromPRE", "payload_template": {"personalizationType": "RbmBodyPartPopoverHtml", "cptCode": "${case.cpt_code}", "cptGroupId": 0, "ZipCode": null}},
+      "validate_exam": {"method": "ValidateExam"},
+      "get_actual_cpt": {"method": "GetActualCPTCode", "payload_template": {"cptGroupId": "${cpt_group_id}", "contrastCaptureId": 2, "bodyPartCode": "${body_part_code}"}},
+      "get_additional_procedure": {"method": "GetAdditionalProcedure", "payload_template": {"primaryCPTCode": "${case.cpt_code}", "secondaryCPTCode": "${case.cpt_code}", "dateOfService": "${date_of_service}", "bodyPartCode": "${body_part_code}"}},
+      "add_exam": {"method": "AddExam"},
+      "is_rbm_eoc_check": {"method": "IsRbmEocCptCheck"},
+      "validate_all_exams": {"method": "ValidateAllExams", "payload_template": {"cptCodes": ["${case.cpt_code}"]}},
+      "process_selected_exams": {"method": "ProcessSelectedExams", "payload": {}},
+      "find_next_exam": {"method": "FindNextExam", "payload": {}}
+    },
+
+    "diagnosis": {
+      "update_state_to_icd": {"method": "UpdateCurrentExamState", "payload": {"examState": 3}},
+      "should_show_unknown_icd": {"method": "ShouldShowUnkownICD", "payload": {}},
+      "search_diagnosis": {"method": "GetMatchingDiagnoses", "payload_template": {"searchTerm": "${case.icd1}"}},
+      "set_diagnosis": {"method": "SetSelectedDiagnosis"},
+      "is_bypass_gold_card": {"method": "IsBypassAndGoldCardStateForExam", "payload": {}}
+    },
+
+    "pathway": {
+      "update_state_to_pathway": {"method": "UpdateCurrentExamState", "payload": {"examState": 2}},
+      "get_pathway_options": {"method": "GetPathwayOptions", "payload": {}},
+      "should_icd_be_selected": {"method": "ShouldICDBeSelected", "payload_template": {"ICDCode": "${case.icd1}"}},
+      "set_pathway": {"method": "SetPathway"},
+      "get_radiotracer_options": {"method": "GetRadiotracerOptions", "payload": {}},
+      "enable_edit_radiotracer": {"method": "EnableEditForRadioTracerCodes", "payload": {}}
+    },
+
+    "clinical_questions": {
+      "loop_endpoint": "GetPathwayAssetsWithValidation",
+      "delete_endpoint": "DeleteAssetsByGroupId",
+      "done_endpoint": "DoneWithExam",
+      "process_accepted": {"method": "ProcessAccepted", "payload": {}},
+      "is_auto_approved": {"method": "IsExamAutoApproved", "payload": {}},
+      "is_cdo_approved": {"method": "IsExamApprovedClinicalDecisionOverride", "payload": {}},
+      "get_algorithm_limit": {"method": "GetAlgorithmAttemptLimitCount", "payload": {}},
+      "get_additional_info_limit": {"method": "GetAdditionalInfoCharacterLimitForExam"},
+      "retrieve_algorithm_messages": {"method": "RetrieveMessageFromPRE", "payload": {"personalizationType": "AlgorithmLimitMessages"}},
+      "add_feedback": {"method": "AddFeedback"},
+      "add_radio_tracers": {"method": "AddRadioTracersIfEligible", "payload": {}}
+    },
+
+    "exam_completion": {
+      "get_procedure_substitutions": {"method": "GetProcedureSubstitutions", "payload_template": {"cptGroup": "${cpt_group_id}"}},
+      "check_additional_doc": {"method": "CheckIfAdditionalDocRequired", "payload": {}},
+      "done_with_exam": {"method": "DoneWithExam", "payload": {"examState": 1}},
+      "find_next_exam": {"method": "FindNextExam", "payload": {}}
+    },
+
+    "facility": {
+      "get_ids_list": {"url": "/AjaxPanel.aspx/GetIdsList", "payload_template": {"ProviderID": "${facility_provider_id}", "ClientID": "${client_id}"}}
+    }
+  },
+
+  "exam_states": {
+    "_comment": "Exam state machine values observed in HAR",
+    "INITIAL_CPT_ENTRY": 6,
+    "ICD_ENTRY": 3,
+    "PATHWAY_QUESTIONS": 2,
+    "ANSWERING_QUESTIONS": 8,
+    "DONE": 1
+  },
+
+  "question_types": {
+    "_comment": "Clinical question type values from HAR answer payloads",
+    "NUMERIC": 2,
+    "SINGLE_SELECT": 3,
+    "MULTI_SELECT": 4
+  },
+
+  "webforms_transitions": {
+    "_comment": "hdnAction values for ASP.NET async postbacks between phases",
+    "CLINICAL_COMPLETE_TO_FACILITY": 6,
+    "PROVIDER_TO_CLINICAL": 20,
+    "POST_SUBMISSION": 17
+  },
+
+  "state_machine": {
+    "phases": [
+      "member_search",
+      "start_order",
+      "check_existing_auths",
+      "provider_search",
+      "clinical_exam_setup",
+      "clinical_diagnosis",
+      "clinical_pathway",
+      "clinical_questions",
+      "clinical_complete",
+      "facility_search",
+      "submit_and_extract"
+    ]
+  },
+
+  "navigation_phases": [
+    {
+      "id": "member_search",
+      "type": "WEBFORM",
+      "description": "SOP Step 1: Enter patient info and find member",
+      "steps": [
+        {"type": "dom_action", "action": "type", "selector": "#asPrimary_ctl00_txtDateOfService", "value_template": "${today_date}", "description": "Date of Service = today"},
+        {"type": "dom_action", "action": "type", "selector": "#asPrimary_ctl00_TxbMemberNumber", "value_template": "${case.policy_num}", "description": "Member ID = policy number"},
+        {"type": "dom_action", "action": "type", "selector": "#asPrimary_ctl00_TxbLastName", "value_template": "${case.last_name}", "description": "Last Name"},
+        {"type": "dom_action", "action": "type", "selector": "#asPrimary_ctl00_TxbFirstName", "value_template": "${case.first_name}", "description": "First Name"},
+        {"type": "dom_action", "action": "type", "selector": "#asPrimary_ctl00_TxbDateOfBirth", "value_template": "${case.dob}", "description": "Date of Birth"},
+        {"type": "dom_action", "action": "click", "selector": "#asPrimary_ctl00_BtnSearch", "description": "Click Find This Member"},
+        {"type": "wait", "wait_ms": 3000, "description": "Wait for member search results"},
+        {"type": "dom_action", "action": "click", "selector": "[id*='gvSearchMembers'] [id*='cmdSelectMember']", "description": "Select first member from results"}
+      ],
+      "output_fields": {}
+    },
+    {
+      "id": "start_order",
+      "type": "WEBFORM",
+      "description": "SOP Step 2: Select Diagnostic Imaging and start order",
+      "steps": [
+        {"type": "wait", "wait_ms": 2000, "description": "Wait for order page to load"},
+        {"type": "dom_action", "action": "click", "selector": "#cmdContinue", "description": "Click Start Order Request"}
+      ],
+      "output_fields": {}
+    },
+    {
+      "id": "check_existing_auths",
+      "type": "WEBFORM",
+      "description": "SOP Step 3: Check for existing authorizations and click Next",
+      "steps": [
+        {"type": "wait", "wait_ms": 2000, "description": "Wait for existing auths page"},
+        {"type": "dom_action", "action": "click", "selector": "#asPrimary_ctl00_cmdNext", "description": "Click Next (no existing auth for same CPT)"}
+      ],
+      "output_fields": {}
+    },
+    {
+      "id": "provider_search",
+      "type": "WEBFORM",
+      "description": "SOP Step 4: Search and select referring provider by NPI",
+      "steps": [
+        {"type": "wait", "wait_ms": 2000, "description": "Wait for provider search page"},
+        {"type": "dom_action", "action": "click", "selector": "#asSearch_ctl00_rbSearchType_1", "description": "Select TIN or NPI search type"},
+        {"type": "dom_action", "action": "click", "selector": "#asSearch_ctl00_rbTINorNPIOption_1", "description": "Select NPI radio"},
+        {"type": "dom_action", "action": "type", "selector": "#asSearch_ctl00_tbTINNPI", "value_template": "${case.referring_npi}", "description": "Enter referring provider NPI"},
+        {"type": "dom_action", "action": "select", "selector": "#asSearch_ctl00_ddlState", "value_template": "${submission_state}", "description": "Select state"},
+        {"type": "dom_action", "action": "click", "selector": "#asSearch_ctl00_btnSearch", "description": "Click Search"},
+        {"type": "wait", "wait_ms": 3000, "description": "Wait for provider results"},
+        {"type": "dom_action", "action": "click", "selector": "[id*='gvSearchProviders'] [id*='lnkBtnName']", "description": "Select first matching provider"}
+      ],
+      "output_fields": {}
+    },
+    {
+      "id": "clinical_exam_setup",
+      "type": "API_SEQUENCE",
+      "description": "SOP Step 5: Enter CPT code via ClinicalFacade SPA",
+      "steps": [
+        {"type": "api_call", "endpoint": "GetClientMessages", "payload_template": {"messageCodes": [13, 16, 41]}, "description": "Init clinical SPA"},
+        {"type": "api_call", "endpoint": "GetCase", "payload_template": {"id": "0"}, "description": "Load case state"},
+        {"type": "api_call", "endpoint": "GetCptCodeBodySidePart", "payload_template": {"cptCode": "${case.cpt_code}", "dateOfService": "${today_date}"}, "extract_to": "body_side_part_options", "description": "Get body side/part options for CPT"},
+        {"type": "api_call", "endpoint": "GetCptCode", "payload_template": {"cptCode": "${case.cpt_code}", "dateOfService": "${today_date}", "selectedCptGrouperId": "${cpt_group_id}"}, "extract_to": "cpt_code_details", "description": "Resolve CPT code"},
+        {"type": "api_call", "endpoint": "ValidateExam", "description": "Validate exam config"},
+        {"type": "api_call", "endpoint": "GetActualCPTCode", "description": "Get actual CPT from group"},
+        {"type": "api_call", "endpoint": "AddExam", "description": "Add exam to case"},
+        {"type": "api_call", "endpoint": "ValidateAllExams", "payload_template": {"cptCodes": ["${case.cpt_code}"]}, "description": "Validate all exams"},
+        {"type": "api_call", "endpoint": "ProcessSelectedExams", "description": "Process selected exams"},
+        {"type": "api_call", "endpoint": "FindNextExam", "description": "Navigate to first exam"}
+      ],
+      "output_fields": {}
+    },
+    {
+      "id": "clinical_diagnosis",
+      "type": "API_SEQUENCE",
+      "description": "SOP Step 6a: Enter ICD-10 code",
+      "steps": [
+        {"type": "api_call", "endpoint": "UpdateCurrentExamState", "payload_template": {"examState": 3}, "description": "Set state to ICD entry"},
+        {"type": "api_call", "endpoint": "GetMatchingDiagnoses", "payload_template": {"searchTerm": "${case.icd1}"}, "extract_to": "diagnosis_results", "description": "Search ICD-10 code"},
+        {"type": "api_call", "endpoint": "SetSelectedDiagnosis", "description": "Set selected diagnosis"},
+        {"type": "api_call", "endpoint": "IsBypassAndGoldCardStateForExam", "description": "Check gold card bypass"}
+      ],
+      "output_fields": {}
+    },
+    {
+      "id": "clinical_pathway",
+      "type": "API_SEQUENCE",
+      "description": "SOP Step 6b: Select clinical pathway",
+      "steps": [
+        {"type": "api_call", "endpoint": "UpdateCurrentExamState", "payload_template": {"examState": 2}, "description": "Set state to pathway"},
+        {"type": "api_call", "endpoint": "GetPathwayOptions", "extract_to": "pathway_options", "description": "Get available pathways"},
+        {"type": "api_call", "endpoint": "SetPathway", "description": "Select best pathway"}
+      ],
+      "output_fields": {}
+    },
+    {
+      "id": "clinical_questions",
+      "type": "RECURSIVE_STATE_MACHINE",
+      "description": "SOP Step 6c: Answer clinical pathway questions iteratively",
+      "loop_endpoint": "GetPathwayAssetsWithValidation",
+      "delete_endpoint": "DeleteAssetsByGroupId",
+      "done_endpoint": "DoneWithExam",
+      "steps": [
+        {"type": "api_call", "endpoint": "GetPathwayAssetsWithValidation", "payload_template": {"groupId": null}, "description": "Get next question group with accumulated answers"}
+      ],
+      "output_fields": {}
+    },
+    {
+      "id": "clinical_complete",
+      "type": "API_SEQUENCE",
+      "description": "Finalize clinical phase and transition to facility",
+      "steps": [
+        {"type": "api_call", "endpoint": "ProcessAccepted", "description": "Process accepted clinical decision"},
+        {"type": "api_call", "endpoint": "IsExamAutoApproved", "extract_to": "auto_approved", "description": "Check if auto-approved"},
+        {"type": "api_call", "endpoint": "AddRadioTracersIfEligible", "description": "Add radio tracers if eligible"},
+        {"type": "api_call", "endpoint": "GetProcedureSubstitutions", "description": "Check procedure substitutions"},
+        {"type": "api_call", "endpoint": "CheckIfAdditionalDocRequired", "description": "Check if additional docs needed"},
+        {"type": "api_call", "endpoint": "DoneWithExam", "payload_template": {"examState": 1}, "description": "Mark exam complete"},
+        {"type": "api_call", "endpoint": "FindNextExam", "description": "Check for more exams"}
+      ],
+      "output_fields": {}
+    },
+    {
+      "id": "facility_search",
+      "type": "WEBFORM",
+      "description": "SOP Step 8: Search and select facility by Center NPI",
+      "steps": [
+        {"type": "wait", "wait_ms": 2000, "description": "Wait for facility page"},
+        {"type": "dom_action", "action": "click", "selector": "[id*='lbProviderSearchAdvanced']", "description": "Open advanced facility search"},
+        {"type": "wait", "wait_ms": 1500, "description": "Wait for advanced search form"},
+        {"type": "dom_action", "action": "type", "selector": "#asSearch_ctl00_tbNPI", "value_template": "${case.center_npi}", "description": "Enter Center NPI"},
+        {"type": "dom_action", "action": "select", "selector": "#asSearch_ctl00_ddlState", "value_template": "${submission_state}", "description": "Select state"},
+        {"type": "dom_action", "action": "click", "selector": "#asSearch_ctl00_btnSearch", "description": "Click Find"},
+        {"type": "wait", "wait_ms": 3000, "description": "Wait for facility results"},
+        {"type": "dom_action", "action": "click", "selector": "[id*='gvSearchProviders'] [id*='cmdSelectFacility1']", "description": "Select first matching facility"},
+        {"type": "wait", "wait_ms": 2000, "description": "Wait for facility confirmation page"},
+        {"type": "dom_action", "action": "click", "selector": "#asPrimary_ctl00_btnContinue", "description": "Click Continue"}
+      ],
+      "output_fields": {}
+    },
+    {
+      "id": "submit_and_extract",
+      "type": "WEBFORM",
+      "description": "SOP Step 9: Review and submit, extract confirmation",
+      "steps": [
+        {"type": "wait", "wait_ms": 2000, "description": "Wait for review page"},
+        {"type": "dom_action", "action": "click", "selector": "#asPrimary_ctl00_cmdSubmitRequest", "description": "Click Submit This Request"},
+        {"type": "wait", "wait_ms": 5000, "description": "Wait for confirmation page"},
+        {"type": "extract", "selector": "#asPrimary_ctl00_lblRequestNumberSumm", "extract_to": "portal_case_id", "description": "Extract Order ID"},
+        {"type": "extract", "selector": "#asPrimary_ctl00_lblReqStatSumm", "extract_to": "determination_status", "description": "Extract determination status"},
+        {"type": "extract", "selector": "#asPrimary_ctl00_lblValidDateFromSumm", "extract_to": "valid_from", "description": "Extract valid from date"},
+        {"type": "extract", "selector": "#asPrimary_ctl00_lblValidDateToSumm", "extract_to": "valid_through", "description": "Extract valid through date"}
+      ],
+      "output_fields": {
+        "portal_case_id": "portal_case_id",
+        "auth_number": "portal_case_id",
+        "determination_status": "determination_status",
+        "valid_from": "valid_from",
+        "valid_through": "valid_through"
+      }
+    }
+  ]
+}

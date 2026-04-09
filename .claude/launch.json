@@ -1,0 +1,28 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "frontend",
+      "runtimeExecutable": "/opt/homebrew/bin/node",
+      "runtimeArgs": ["node_modules/.bin/next", "dev"],
+      "port": 3000,
+      "autoPort": false,
+      "cwd": "frontend",
+      "env": { "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" }
+    },
+    {
+      "name": "backend",
+      "runtimeExecutable": "/usr/local/bin/python3",
+      "runtimeArgs": ["-m", "hypercorn", "main:app", "--bind", "0.0.0.0:8000"],
+      "port": 8000,
+      "cwd": "backend"
+    },
+    {
+      "name": "restate-worker",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["restate_worker.py"],
+      "port": 9080,
+      "cwd": "backend"
+    }
+  ]
+}

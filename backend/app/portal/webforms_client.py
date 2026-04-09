@@ -1,0 +1,1709 @@
+"""WebForms DOM automation — Playwright interactions for ASP.NET WebForms pages.
+
+All interactions go through BehaviorEngine. No raw page.click() calls.
+DOM selectors HAR-validated from 3 recorded Carelon submissions (3,956 entries).
+
+Every method returns a result dict: {"ok": bool, "message": str|None, "data": {}}.
+Portal messages are captured on every step — this is how intelligence grows.
+
+ARCHITECTURE NOTE: The Carelon portal is a classic ASP.NET WebForms app.
+- Single URL: https://www.providerportal.com/Default.aspx
+- Navigation via full-page postbacks with __VIEWSTATE + __EVENTTARGET
+- Clinical questions handled by a separate ClinicalFacade.aspx JSON SPA
+"""
+from __future__ import annotations
+
+import logging
+import re
+from datetime import date
+
+from app.portal.behavior_engine import BehaviorEngine
+from app.portal.page_reader import PageReader
+from app.portal.session import PlaywrightPortalSession
+
+logger = logging.getLogger(__name__)
+
+# HAR-validated selectors — mapped from 3 recorded submissions
+SEL = {
+    # --- Member Search (SOP Step 1) ---
+    "dos": "#asPrimary_ctl00_txtDateOfService",
+    "first_name": "#asPrimary_ctl00_TxbFirstName",
+    "last_name": "#asPrimary_ctl00_TxbLastName",
+    "member_number": "#asPrimary_ctl00_TxbMemberNumber",
+    "dob": "#asPrimary_ctl00_TxbDateOfBirth",
+    "find_member": "#asPrimary_ctl00_BtnSearch",
+
+    # --- Start Order (SOP Step 2) ---
+    "selected_type_hidden": "#asPrimary_ctl00_hdnSelectedType",
+    "phone": "#txbPhone",
+    "start_order": "#cmdContinue",
+
+    # --- Existing Auths (SOP Step 3) ---
+    "next_button": "#asPrimary_ctl00_cmdNext",
+
+    # --- Provider Search (SOP Step 4) ---
+    "prov_search_type_tin_npi": "#asSearch_ctl00_rbSearchType_1",
+    "prov_npi_radio": "#asSearch_ctl00_rbTINorNPIOption_1",
+    "prov_npi_field": "#asSearch_ctl00_tbTINNPI",
+    "prov_state": "#asSearch_ctl00_ddlState",
+    "prov_search_btn": "#asSearch_ctl00_btnSearch",
+    "prov_fax": "#asPrimary_ctl00_txbFax",
+
+    # --- Facility Search (SOP Step 8) ---
+    "fac_advanced_link": "[id*='lbProviderSearchAdvanced']",
+    "fac_name": "#asSearch_ctl00_tbFacilityName",
+    "fac_npi": "#asSearch_ctl00_tbNPI",
+    "fac_state": "#asSearch_ctl00_ddlState",
+    "fac_zip": "#asSearch_ctl00_tbZip",
+    "fac_find_btn": "#asSearch_ctl00_btnSearch",
+    "fac_continue": "#asPrimary_ctl00_btnContinue",
+
+    # --- Submit (SOP Step 9) ---
+    "submit_request": "#asPrimary_ctl00_cmdSubmitRequest",
+    "comments": "#asPrimary_ctl00_txtComments",
+
+    # --- Confirmation (extract) ---
+    "conf_order_id": "#asPrimary_ctl00_lblRequestNumberSumm",
+    "conf_status": "#asPrimary_ctl00_lblReqStatSumm",
+    "conf_valid_from": "#asPrimary_ctl00_lblValidDateFromSumm",
+    "conf_valid_through": "#asPrimary_ctl00_lblValidDateToSumm",
+    "conf_health_plan": "#asPrimary_ctl00_lblHealthPl1Summ",
+
+    # --- Terms ---
+    "agree_button": "#asPrimary_ctl00_cmdAgreeContinue",
+}
+
+
+def _ok(data: dict | None = None) -> dict:
+    """Successful step result."""
+    return {"ok": True, "message": None, "data": data or {}}
+
+
+def _fail(message: str, data: dict | None = None) -> dict:
+    """Failed step result — captures the portal message."""
+    return {"ok": False, "message": message, "data": data or {}}
+
+
+def _normalize_dob(dob: str) -> str:
+    """Convert DOB to MM/DD/YYYY format for the portal.
+
+    Handles:
+      - YYYY-MM-DD (ISO from DB) → MM/DD/YYYY
+      - MM/DD/YYYY (already correct) → pass through
+      - Other formats → best-effort conversion
+    """
+    if not dob:
+        return dob
+    # YYYY-MM-DD → MM/DD/YYYY
+    m = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})$", dob)
+    if m:
+        return f"{int(m.group(2)):02d}/{int(m.group(3)):02d}/{m.group(1)}"
+    # Already MM/DD/YYYY
+    if re.match(r"^\d{1,2}/\d{1,2}/\d{4}$", dob):
+        return dob
+    return dob
+
+
+class WebFormsClient:
+    """Handles WebForms page DOM interactions for the Carelon portal.
+
+    All selectors are HAR-validated from 3 actual submission recordings.
+    Every method returns {"ok": bool, "message": str|None, "data": {}}.
+    Portal messages are always captured — the system learns from volume.
+    """
+
+    def __init__(self, session: PlaywrightPortalSession):
+        self.session = session
+        self.page = session.page
+        self.behavior = session.behavior
+        self.reader = PageReader(session.page)
+
+    # --- SOP Step 1: Member Search ---
+
+    async def agree_to_terms(self) -> dict:
+        """Click 'I Agree' on the terms/agreement page."""
+        logger.info("Accepting terms of use")
+        try:
+            await self.page.wait_for_selector(SEL["agree_button"], timeout=10000)
+            await self.behavior.click(SEL["agree_button"])
+            await self.reader.wait_for_postback()
+            return _ok()
+        except Exception as e:
+            messages = await self.reader.read_messages()
+            return _fail(messages.error or f"Could not find agree button: {e}")
+
+    async def search_member(
+        self,
+        first_name: str,
+        last_name: str,
+        dob: str,
+        policy_num: str,
+    ) -> dict:
+        """Search for a member and select from results.
+
+        Returns:
+            {"ok": True, "data": {"results_count": N}} on success
+            {"ok": False, "message": "portal error text"} on failure
+        """
+        # Convert DOB from YYYY-MM-DD to MM/DD/YYYY if needed
+        dob = _normalize_dob(dob)
+        logger.info(f"Searching member: {first_name} {last_name}, MemberID={policy_num}, DOB={dob}")
+
+        # Wait for search form to be ready (critical for session reuse between cases)
+        # HAR shows landing/member search page takes 18-23s to load
+        try:
+            await self.page.wait_for_selector(SEL["find_member"], state="visible", timeout=45000)
+        except Exception:
+            logger.warning("Member search form not ready — waiting for page load")
+            await self.page.wait_for_load_state("domcontentloaded")
+            await self.page.wait_for_selector(SEL["find_member"], state="visible", timeout=15000)
+
+        # Date of Service = today
+        today = date.today().strftime("%m/%d/%Y")
+        await self.behavior.type_text(SEL["dos"], today)
+        await self.behavior.type_text(SEL["member_number"], policy_num)
+        await self.behavior.type_text(SEL["last_name"], last_name)
+        await self.behavior.type_text(SEL["first_name"], first_name)
+        await self.behavior.type_text(SEL["dob"], dob)
+
+        # Click Find This Member
+        await self.behavior.click(SEL["find_member"], action_type="buttonClick")
+        await self.reader.wait_for_postback()
+
+        # Read what the portal says
+        messages = await self.reader.read_messages()
+        if messages.error:
+            return _fail(
+                messages.error,
+                data={"searched": {"first_name": first_name, "last_name": last_name, "policy_num": policy_num}},
+            )
+
+        # After search, the portal either:
+        #   a) Shows a results grid (multiple matches) → select the first one
+        #   b) Auto-selects (single match) → goes straight to service category page
+        has_grid = await self.reader.has_results("member")
+
+        if has_grid:
+            # Multiple results — return count without auto-selecting.
+            # Caller (portal_compiler) iterates rows to find an eligible plan.
+            count = await self.reader.results_count("member")
+            logger.info(f"Member search returned {count} result(s) in grid")
+
+            return _ok({"results_count": count, "auto_selected": False, "grid_visible": True})
+
+        # No grid — check if portal auto-selected (service category page)
+        # Look for member name on the page (confirms member was found)
+        page_text = await self.page.evaluate("() => document.body.innerText.substring(0, 2000)")
+        page_lower = (page_text or "").lower()
+
+        if last_name.lower() in page_lower and first_name.lower() in page_lower:
+            logger.info(f"Member auto-selected: {first_name} {last_name}")
+            return _ok({"results_count": 1, "auto_selected": True, "info": messages.info})
+
+        # Neither grid nor member name found — member truly not found
+        return _fail(
+            "Member not found — no results returned",
+            data={"searched": {"first_name": first_name, "last_name": last_name, "policy_num": policy_num}},
+        )
+
+    # --- SOP Step 1a-multi: Select a specific member from results grid ---
+
+    async def select_member_at_index(self, index: int = 0) -> dict:
+        """Select a specific member/plan row from the search results grid.
+
+        ASP.NET GridView rows use ctl02 for first data row, ctl03 for second, etc.
+        (ctl01 is typically the header row.)
+
+        Args:
+            index: 0-based index into data rows (0 = first result row)
+
+        Returns:
+            {"ok": True, "data": {...}} or {"ok": False, "message": ...}
+        """
+        ctl_num = f"{index + 2:02d}"
+        selector = f"[id*='gvSearchMembers_ctl{ctl_num}_cmdSelectMember']"
+        logger.info(f"Selecting member result at index {index} (ctl{ctl_num})")
+
+        link = await self.page.query_selector(selector)
+        if not link:
+            # Fallback: try nth cmdSelectMember link
+            all_links = await self.page.query_selector_all(
+                "[id*='gvSearchMembers'] [id*='cmdSelectMember']"
+            )
+            if index < len(all_links):
+                selector = f"[id*='gvSearchMembers'] [id*='cmdSelectMember'] >> nth={index}"
+                logger.info(f"Fallback: using nth={index} selector")
+            else:
+                return _fail(f"No selectable member link at index {index}")
+
+        await self.behavior.click(selector, action_type="searchResult")
+        await self.reader.wait_for_postback()
+
+        post_messages = await self.reader.read_messages()
+        if post_messages.error:
+            return _fail(post_messages.error)
+
+        return _ok({"selected_index": index, "info": post_messages.info})
+
+    async def navigate_back_to_member_results(self) -> dict:
+        """Navigate back to the member search results grid after selecting a member.
+
+        Uses browser back button — ASP.NET WebForms postbacks are full page reloads
+        so the cached page should still have the grid with ViewState intact.
+
+        Returns:
+            {"ok": True} if grid is visible again, {"ok": False, "message": ...} otherwise
+        """
+        logger.info("Navigating back to member search results grid")
+        import asyncio
+
+        await self.page.go_back()
+        await asyncio.sleep(1)
+
+        # Wait for the grid to be visible again
+        try:
+            await self.page.wait_for_selector(
+                "#asPrimary_ctl00_gvSearchMembers", state="visible", timeout=10000
+            )
+            return _ok({})
+        except Exception:
+            # Grid not visible — page back may have gone too far or ViewState expired
+            logger.warning("Grid not visible after go_back — trying page reload approach")
+            return _fail("Could not navigate back to member results grid")
+
+    # --- SOP Step 1b: Extract Eligibility Details ---
+
+    async def extract_eligibility_details(self) -> dict:
+        """Extract eligibility details from the service category page.
+
+        After member search, the page shows member info including:
+          - Product/Carrier, Product Group, Employer Group ID
+          - Effective dates for the current plan
+
+        Returns:
+            {"ok": True, "data": {"effective_date": ..., "plan_info": ..., ...}}
+        """
+        logger.info("Extracting eligibility details from service category page")
+
+        # Wait for page to have member info loaded
+        try:
+            await self.page.wait_for_selector("text=Effective", state="visible", timeout=10000)
+        except Exception:
+            await self.page.wait_for_load_state("domcontentloaded")
+
+        details = await self.page.evaluate("""
+            () => {
+                const result = {
+                    effective_date: null,
+                    plan_info: null,
+                    member_text: null,
+                };
+
+                // Read the full page text to capture all displayed info
+                const bodyText = document.body ? document.body.innerText : '';
+                result.member_text = bodyText.substring(0, 3000);
+
+                // Look for effective date patterns in the page
+                // Common patterns: "Effective Date: MM/DD/YYYY", "Eff Date", "Effective"
+                const effMatch = bodyText.match(
+                    /(?:effective|eff\\.?)[\\s:]*date[\\s:]*([\\d]{1,2}\\/[\\d]{1,2}\\/[\\d]{4})/i
+                );
+                if (effMatch) result.effective_date = effMatch[1];
+
+                // Also try: "MM/DD/YYYY-MM/DD/YYYY" or with spaces/dashes
+                // Always overwrite effective + set term from range
+                const rangeMatch = bodyText.match(
+                    /(\\d{1,2}\\/\\d{1,2}\\/\\d{4})\\s*[-–—]\\s*(\\d{1,2}\\/\\d{1,2}\\/\\d{4})/
+                );
+                if (rangeMatch) {
+                    result.effective_date = rangeMatch[1];
+                    result.term_date = rangeMatch[2];
+                }
+
+                // Look for labeled fields in table/span elements
+                const labels = document.querySelectorAll('td, th, span, label');
+                for (const el of labels) {
+                    const text = (el.textContent || '').trim().toLowerCase();
+                    if (text.includes('product') && text.includes('carrier')) {
+                        const next = el.nextElementSibling;
+                        if (next) result.plan_info = next.textContent.trim();
+                    }
+                }
+
+                // Try reading specific ASP.NET label elements for eligibility info
+                const eligSelectors = [
+                    '[id*="lblEffective"]', '[id*="lblEligibility"]',
+                    '[id*="lblPlanEffDate"]', '[id*="lblProduct"]',
+                    '[id*="lblCarrier"]', '[id*="lblEff"]',
+                    '[id*="EffDate"]', '[id*="effDate"]',
+                ];
+                const eligData = {};
+                for (const sel of eligSelectors) {
+                    const els = document.querySelectorAll(sel);
+                    for (const el of els) {
+                        const t = (el.textContent || '').trim();
+                        if (t) eligData[el.id || sel] = t;
+                    }
+                }
+                if (Object.keys(eligData).length > 0) {
+                    result.elig_fields = eligData;
+                }
+
+                // Check if DI requires pre-auth for this member's plan.
+                // The eligibility page lists services in two sections:
+                //   1. "may require a Pre-Authorization" (listed first)
+                //   2. "do not require Pre-Authorization" (listed second)
+                // If "Diagnostic Imaging" appears AFTER the "do not require" marker,
+                // this member's plan doesn't need DI pre-auth.
+                const lowerText = bodyText.toLowerCase();
+                const noAuthIdx = lowerText.indexOf('do not require');
+                const diIdx = lowerText.indexOf('diagnostic imaging');
+                // DI requires auth if: no "do not require" section, OR DI appears before it
+                result.di_requires_auth = (noAuthIdx === -1) || (diIdx === -1) || (diIdx < noAuthIdx);
+
+                return result;
+            }
+        """)
+
+        logger.info(f"Eligibility details: effective_date={details.get('effective_date')}, term_date={details.get('term_date')}, di_requires_auth={details.get('di_requires_auth')}")
+        if details.get('elig_fields'):
+            logger.info(f"Eligibility fields found: {details['elig_fields']}")
+
+        return _ok(details)
+
+    # --- SOP Step 2: Start Order ---
+
+    async def select_diagnostic_imaging(self) -> dict:
+        """Select 'Diagnostic Imaging' service type card on the service category page.
+
+        After member search, the portal shows solution cards (Diagnostic Imaging,
+        Cardiovascular, Sleep Management, etc.). We must click the DI card's
+        actual checkbox/input — not just the text div.
+
+        The portal uses ASP.NET checkboxes inside card containers. Clicking the
+        card text doesn't trigger the proper JS event. We need to find the
+        actual input element.
+        """
+        logger.info("Selecting Diagnostic Imaging service type")
+
+        # Wait for service category cards to load
+        try:
+            await self.page.wait_for_selector("h3.card-title", state="visible", timeout=10000)
+        except Exception:
+            await self.page.wait_for_load_state("domcontentloaded")
+
+        # First, inspect the DOM to understand the card structure
+        dom_info = await self.page.evaluate("""
+            () => {
+                const info = { inputs: [], cards: [], links: [] };
+
+                // Find all inputs near "Diagnostic Imaging" text
+                const allEls = document.querySelectorAll('*');
+                for (const el of allEls) {
+                    const ownText = Array.from(el.childNodes)
+                        .filter(n => n.nodeType === 3)
+                        .map(n => n.textContent.trim())
+                        .join(' ');
+                    if (ownText.includes('Diagnostic Imaging')) {
+                        info.cards.push({
+                            tag: el.tagName,
+                            id: el.id,
+                            className: el.className,
+                            parent_id: el.parentElement ? el.parentElement.id : null,
+                            parent_class: el.parentElement ? el.parentElement.className : null,
+                        });
+                    }
+                }
+
+                // Find all checkboxes and radios on the page
+                const inputs = document.querySelectorAll(
+                    'input[type="checkbox"], input[type="radio"]'
+                );
+                for (const inp of inputs) {
+                    info.inputs.push({
+                        tag: inp.tagName,
+                        type: inp.type,
+                        id: inp.id,
+                        name: inp.name,
+                        value: inp.value,
+                        checked: inp.checked,
+                        visible: inp.offsetParent !== null,
+                    });
+                }
+
+                // Find any links/anchors that might be the clickable card element
+                const links = document.querySelectorAll('a[id*="Diagnostic"], a[href*="Diagnostic"]');
+                for (const a of links) {
+                    info.links.push({ id: a.id, href: a.href, text: a.textContent.trim().substring(0, 50) });
+                }
+
+                return info;
+            }
+        """)
+        logger.info(f"DI card DOM inspection: cards={dom_info.get('cards', [])}")
+        logger.info(f"DI card inputs: {dom_info.get('inputs', [])}")
+
+        # Strategy 1: Find checkbox/radio associated with Diagnostic Imaging
+        clicked = await self.page.evaluate("""
+            () => {
+                // Find checkbox/radio inputs related to Diagnostic Imaging
+                const inputs = document.querySelectorAll(
+                    'input[type="checkbox"], input[type="radio"]'
+                );
+                for (const inp of inputs) {
+                    const id = (inp.id || '').toLowerCase();
+                    const name = (inp.name || '').toLowerCase();
+                    const val = (inp.value || '').toLowerCase();
+
+                    // Check if this input is for Diagnostic Imaging
+                    if (id.includes('diagnostic') || name.includes('diagnostic')
+                        || val.includes('diagnostic') || id.includes('rbdiagnostic')) {
+                        inp.checked = true;
+                        inp.click();
+                        inp.dispatchEvent(new Event('change', { bubbles: true }));
+                        inp.dispatchEvent(new Event('click', { bubbles: true }));
+                        return { method: 'input', id: inp.id, type: inp.type };
+                    }
+
+                    // Also check associated label
+                    const label = document.querySelector('label[for="' + inp.id + '"]');
+                    if (label && label.textContent.includes('Diagnostic Imaging')) {
+                        inp.checked = true;
+                        inp.click();
+                        inp.dispatchEvent(new Event('change', { bubbles: true }));
+                        return { method: 'label_input', id: inp.id };
+                    }
+                }
+
+                // Strategy 2: Find the card container and click its inner clickable element
+                // Look for td/div containers with "Diagnostic Imaging" that have onclick
+                const containers = document.querySelectorAll('td, div, span');
+                for (const c of containers) {
+                    if (c.onclick && c.textContent.includes('Diagnostic Imaging')) {
+                        c.click();
+                        return { method: 'onclick_container', tag: c.tagName, id: c.id };
+                    }
+                }
+
+                // Strategy 3: Try __doPostBack style links
+                const links = document.querySelectorAll('a');
+                for (const a of links) {
+                    const href = a.getAttribute('href') || '';
+                    if (href.includes('Diagnostic') || (a.textContent || '').includes('Diagnostic Imaging')) {
+                        a.click();
+                        return { method: 'link', id: a.id, text: a.textContent.substring(0, 30) };
+                    }
+                }
+
+                return null;
+            }
+        """)
+
+        if clicked:
+            logger.info(f"Selected Diagnostic Imaging: {clicked}")
+            await self.behavior.think("formField")
+            # Wait for any postback triggered by the selection
+            try:
+                await self.reader.wait_for_postback()
+            except Exception:
+                pass
+            return _ok(clicked)
+
+        # Strategy 4: Fallback — set the hidden field directly and force-click the button
+        logger.warning("Could not find DI input, setting hidden field directly")
+        phone_val = await self.page.evaluate("""
+            () => {
+                const phone = document.querySelector('#txbPhone');
+                return phone ? phone.value || '' : '';
+            }
+        """)
+        hidden_val = f"RbDiagnosticImaging;{phone_val};M;0;;;"
+        await self.page.evaluate(f"""
+            () => {{
+                const hdn = document.getElementById('asPrimary_ctl00_hdnSelectedType');
+                if (hdn) {{
+                    hdn.value = '{hidden_val}';
+                    return true;
+                }}
+                return false;
+            }}
+        """)
+        logger.info(f"Set hdnSelectedType = {hidden_val}")
+        return _ok({"method": "hidden_field_fallback"})
+
+    async def extract_patient_phone(self) -> dict:
+        """Extract patient mobile phone number from the phone field.
+
+        The phone field (#txbPhone) appears after selecting Diagnostic Imaging.
+        We read whatever value is pre-filled (if any).
+
+        Returns:
+            {"ok": True, "data": {"phone": "..."}}
+        """
+        logger.info("Extracting patient phone number")
+        try:
+            phone_val = await self.page.evaluate("""
+                () => {
+                    const phoneField = document.querySelector('#txbPhone');
+                    return phoneField ? phoneField.value || '' : null;
+                }
+            """)
+            logger.info(f"Patient phone: {phone_val or '(empty)'}")
+            return _ok({"phone": phone_val})
+        except Exception as e:
+            logger.warning(f"Could not read phone field: {e}")
+            return _ok({"phone": None})
+
+    async def start_order_request(self) -> dict:
+        """Click 'Start Order Request' (cmdContinue) after service type is selected.
+
+        The button may be hidden if the portal's JS didn't register the DI
+        selection. We try normal click first, then force click, then JS submit.
+        """
+        logger.info("Clicking Start Order Request")
+
+        # Try 1: Normal click (button visible)
+        try:
+            btn = await self.page.query_selector(SEL["start_order"])
+            if btn:
+                visible = await btn.is_visible()
+                if visible:
+                    await self.behavior.click(SEL["start_order"], action_type="buttonClick")
+                    await self.reader.wait_for_postback()
+                    messages = await self.reader.read_messages()
+                    if messages.error:
+                        return _fail(messages.error)
+                    return _ok({"info": messages.info, "method": "normal_click"})
+        except Exception:
+            pass
+
+        # Try 2: Force click (button exists but hidden)
+        logger.info("Button hidden — trying force click")
+        try:
+            await self.page.click(SEL["start_order"], force=True)
+            await self.reader.wait_for_postback()
+            messages = await self.reader.read_messages()
+            if messages.error:
+                return _fail(messages.error)
+            return _ok({"info": messages.info, "method": "force_click"})
+        except Exception:
+            pass
+
+        # Try 3: JS form submit
+        logger.info("Force click failed — trying JS submit")
+        try:
+            await self.page.evaluate("""
+                () => {
+                    const btn = document.getElementById('cmdContinue');
+                    if (btn) {
+                        btn.style.display = 'inline';
+                        btn.style.visibility = 'visible';
+                        btn.click();
+                        return true;
+                    }
+                    return false;
+                }
+            """)
+            await self.reader.wait_for_postback()
+            messages = await self.reader.read_messages()
+            if messages.error:
+                return _fail(messages.error)
+            return _ok({"info": messages.info, "method": "js_submit"})
+        except Exception as e:
+            messages = await self.reader.read_messages()
+            return _fail(messages.error or f"Start order failed: {e}")
+
+    # --- SOP Step 3: Check Existing Auths ---
+
+    async def extract_existing_auths(self) -> dict:
+        """Extract all existing authorization details from the Member History grid.
+
+        The portal shows: "Please verify the list of Order requests below
+        to ensure you are not entering a duplicate case."
+
+        Grid columns: Order ID, Order Status, Date of Service,
+        Exam Description, Ordering Provider, Outcome, Reason.
+
+        Returns:
+            {"ok": True, "data": {"auths": [...], "count": N}}
+        """
+        logger.info("Extracting existing authorizations from Member History grid")
+
+        # Wait for page to settle after Start Order postback
+        await self.page.wait_for_load_state("domcontentloaded")
+
+        # Check what page we're on
+        page_text = await self.page.evaluate("() => document.body.innerText.substring(0, 500)")
+        logger.info(f"check_existing_auths page_text (first 300): {page_text[:300]}")
+
+        # Check if portal says "does not require an Order ID" — no auth needed
+        # Be specific: only match the exact portal message, not generic page text
+        no_auth_phrases = [
+            "does not require pre-authorization",
+            "does not require an order",
+            "pre-authorization is not required",
+        ]
+        if any(phrase in page_text.lower() for phrase in no_auth_phrases):
+            logger.warning(f"Portal says no auth required for this member/procedure")
+            return _ok({
+                "auths": [], "count": 0, "skipped": True,
+                "no_auth_required": True,
+                "portal_message": page_text[:300],
+            })
+        if "order summary" in page_text.lower():
+            logger.warning(f"Order summary detected — may be stale session")
+            return _ok({
+                "auths": [], "count": 0, "skipped": True,
+                "no_auth_required": True,
+                "portal_message": page_text[:300],
+            })
+
+        # Already on provider search?
+        is_provider_page = await self.page.query_selector(SEL["prov_search_type_tin_npi"])
+        if is_provider_page:
+            logger.info("Portal skipped auths page — already on provider search")
+            return _ok({"auths": [], "count": 0, "skipped": True, "already_on_provider": True})
+
+        # Wait for Next button (auths page indicator)
+        try:
+            await self.page.wait_for_selector(SEL["next_button"], timeout=15000)
+        except Exception:
+            # Still not on auths page — check provider page one more time
+            is_provider_page = await self.page.query_selector(SEL["prov_search_type_tin_npi"])
+            if is_provider_page:
+                logger.info("Portal skipped auths — on provider search after wait")
+                return _ok({"auths": [], "count": 0, "skipped": True, "already_on_provider": True})
+            logger.warning(f"Auths page not detected — page text: {page_text[:200]}")
+            try:
+                await self.page.screenshot(path="/tmp/ronexa_unknown_page_after_start.png")
+            except Exception:
+                pass
+            return _ok({"auths": [], "count": 0, "skipped": True})
+
+        has_existing = await self.reader.has_results("exams")
+        if not has_existing:
+            logger.info("No existing authorizations found")
+            return _ok({"auths": [], "count": 0})
+
+        # Extract all rows from the Member History grid
+        auths = await self.page.evaluate("""
+            () => {
+                const grid = document.querySelector('#asPrimary_ctl00_gvMemberExams');
+                if (!grid) return [];
+
+                const rows = grid.querySelectorAll('tr');
+                const results = [];
+
+                // Skip header row (index 0)
+                for (let i = 1; i < rows.length; i++) {
+                    const cells = rows[i].querySelectorAll('td');
+                    if (cells.length >= 7) {
+                        results.push({
+                            order_id: (cells[0].textContent || '').trim(),
+                            order_status: (cells[1].textContent || '').trim(),
+                            date_of_service: (cells[2].textContent || '').trim(),
+                            exam_description: (cells[3].textContent || '').trim(),
+                            ordering_provider: (cells[4].textContent || '').trim(),
+                            outcome: (cells[5].textContent || '').trim(),
+                            reason: (cells[6].textContent || '').trim(),
+                        });
+                    }
+                }
+                return results;
+            }
+        """)
+
+        logger.info(f"Found {len(auths)} existing authorizations")
+        for auth in auths:
+            logger.info(
+                f"  Auth {auth['order_id']}: {auth['exam_description']} "
+                f"({auth['date_of_service']}) — {auth['outcome']}"
+            )
+
+        return _ok({"auths": auths, "count": len(auths)})
+
+    async def click_next_after_auths(self) -> dict:
+        """Click Next on the existing authorizations page.
+
+        Call this after extract_existing_auths() and after the LLM
+        has confirmed no duplicate CPT exists.
+        """
+        logger.info("Clicking Next on existing auths page")
+        try:
+            # Wait for Next button to be available
+            await self.page.wait_for_selector(SEL["next_button"], state="visible", timeout=10000)
+            await self.behavior.click(SEL["next_button"], action_type="buttonClick")
+            await self.reader.wait_for_postback()
+
+            messages = await self.reader.read_messages()
+            if messages.error:
+                return _fail(messages.error)
+
+            return _ok({"info": messages.info})
+        except Exception as e:
+            return _fail(f"Could not click Next: {e}")
+
+    # --- SOP Step 4: Provider Search ---
+
+    async def search_provider(
+        self,
+        referring_npi: str,
+        state: str = "",
+        fax: str = "",
+        match_address: str = "",
+        match_name: str = "",
+    ) -> dict:
+        """Search for referring provider by NPI, extract results, select best match, enter fax.
+
+        After NPI search, extracts all provider results with addresses.
+        Matching priority:
+          1. Address match — `match_address` from RIS (disambiguates locations)
+          2. Name match — `match_name` ("First Last") from RIS (confirmation/fallback)
+          3. Default first — select first result
+
+        After selecting a provider, the portal shows a fax number modal.
+        If fax is provided, it's entered and saved. Otherwise clicks "Fax Unavailable".
+
+        Returns:
+            {"ok": True, "data": {"results_count": N, "providers": [...], "selected_index": I}}
+        """
+        logger.info(f"Searching provider NPI={referring_npi} in state={state}")
+
+        # Wait for provider search form — state-based waiting + inline retry
+        try:
+            await self._wait_for_provider_search_page()
+        except Exception as e:
+            # Capture diagnostic info for debugging
+            page_url = self.page.url
+            page_title = ""
+            try:
+                page_title = await self.page.title()
+                await self.page.screenshot(path="/tmp/ronexa_provider_search_fail.png")
+            except Exception:
+                pass
+            logger.error(
+                f"Provider search page did not load. URL={page_url}, "
+                f"title={page_title}, error={e}"
+            )
+            return _fail(
+                f"Portal error: Provider search page did not load after transition "
+                f"(URL: {page_url[:80]})"
+            )
+
+        # Select "TIN or NPI" search type radio — senior rep goes straight to NPI
+        await self.behavior.click(SEL["prov_search_type_tin_npi"], action_type="formField")
+
+        # Select NPI radio
+        await self.behavior.click(SEL["prov_npi_radio"], action_type="formField")
+
+        # Enter NPI
+        await self.behavior.type_text(SEL["prov_npi_field"], referring_npi)
+
+        # Select state (only if provided — NPI is sufficient for search)
+        if state:
+            await self.behavior.select_option(SEL["prov_state"], state)
+
+        # Click Search
+        await self.behavior.click(SEL["prov_search_btn"], action_type="buttonClick")
+        await self.reader.wait_for_postback()
+
+        # State Wait: let the portal finish rendering results
+        try:
+            await self.page.wait_for_load_state("networkidle", timeout=15000)
+        except Exception:
+            logger.warning("Provider search: networkidle timeout after search — continuing")
+
+        # Read what the portal says
+        messages = await self.reader.read_messages()
+        if messages.error:
+            return _fail(messages.error, data={"npi": referring_npi, "state": state})
+
+        # Check for results — retry once if grid not rendered yet
+        has_results = await self.reader.has_results("provider")
+        if not has_results:
+            # Grid might still be rendering — settle and check once more
+            await self.page.wait_for_timeout(3000)
+            try:
+                await self.page.wait_for_load_state("networkidle", timeout=10000)
+            except Exception:
+                pass
+            has_results = await self.reader.has_results("provider")
+
+        if not has_results:
+            return _fail(
+                messages.error or f"Provider NPI {referring_npi} not found in {state}",
+                data={"npi": referring_npi, "state": state},
+            )
+
+        count = await self.reader.results_count("provider")
+
+        # Extract all provider results with addresses
+        providers = await self._extract_provider_results()
+        logger.info(f"Found {len(providers)} provider result(s):")
+        for i, p in enumerate(providers):
+            logger.info(
+                f"  [{i}] {p.get('name', '?')} — {p.get('address', '?')}, "
+                f"{p.get('city', '?')} ({p.get('specialty', '?')})"
+            )
+
+        # Validate we actually have selectable providers
+        if not providers:
+            return _fail(
+                f"Provider NPI {referring_npi} search returned grid but no selectable rows in {state}",
+                data={"npi": referring_npi, "state": state},
+            )
+
+        # Select provider: address → name → default first
+        selected_index = 0
+        match_method = "single_result" if len(providers) == 1 else "default_first"
+
+        if len(providers) > 1:
+            # Priority 1: Address match (disambiguates locations)
+            if match_address:
+                idx = self._match_provider_by_address(providers, match_address)
+                # _match_provider_by_address returns 0 as default, so check if it
+                # actually matched by verifying address appears in the result
+                addr_lower = match_address.lower().strip()
+                candidate_addr = (providers[idx].get("address") or "").lower()
+                if addr_lower in candidate_addr or candidate_addr in addr_lower or idx > 0:
+                    selected_index = idx
+                    match_method = "address"
+                    logger.info(f"Address match at index {idx}: {providers[idx].get('address')}")
+
+            # Priority 2: Name match (when address unavailable or didn't match)
+            if match_method == "default_first" and match_name:
+                idx = self._match_provider_by_name(providers, match_name)
+                if idx >= 0:
+                    selected_index = idx
+                    match_method = "name"
+                    logger.info(f"Name match at index {idx}: {providers[idx].get('name')}")
+
+            if match_method == "default_first":
+                logger.info("No address or name match — selecting first provider")
+
+        # Click the selected provider's link
+        try:
+            # Build selector for the specific row
+            if selected_index == 0:
+                # First result — use simple selector
+                await self.behavior.click(
+                    "[id*='gvSearchProviders'] [id*='lnkBtnName']",
+                    action_type="searchResult",
+                )
+            else:
+                # Specific row — click by index via JS
+                await self.page.evaluate(f"""
+                    () => {{
+                        const links = document.querySelectorAll(
+                            "[id*='gvSearchProviders'] [id*='lnkBtnName']"
+                        );
+                        if (links[{selected_index}]) {{
+                            links[{selected_index}].click();
+                            return true;
+                        }}
+                        return false;
+                    }}
+                """)
+            await self.reader.wait_for_postback()
+        except Exception as e:
+            return _fail(f"Could not select provider: {e}")
+
+        post_messages = await self.reader.read_messages()
+        if post_messages.error:
+            return _fail(post_messages.error)
+
+        # Handle the fax popup that appears after provider selection.
+        # Live testing (April 7 2026) confirmed: portal shows "Ordering Provider
+        # Fax Number" popup. Clinical SPA won't initialize until it's dismissed.
+        await self._handle_fax_modal(fax=fax)
+
+        selected = providers[selected_index] if selected_index < len(providers) else None
+        return _ok({
+            "results_count": count,
+            "providers": providers,
+            "selected_index": selected_index,
+            "selected_provider": selected,
+            "match_method": match_method,
+            "info": post_messages.info,
+            # Provider match detail for flow check card
+            "provider_match": {
+                "name": selected.get("name") if selected else None,
+                "address": selected.get("address") if selected else None,
+                "match_method": match_method,
+                "results_count": count,
+                "selected_index": selected_index,
+                "fax_entered": fax or None,
+                "ris_address": match_address or None,
+                "ris_name": match_name or None,
+            },
+        })
+
+    async def _wait_for_provider_search_page(self) -> None:
+        """Wait for provider search page with state-based waiting.
+
+        Strategy 1: Wait for page state (networkidle) BEFORE checking DOM elements.
+        Strategy 3: One inline retry — if element not found after state wait,
+        wait again and check once more before failing.
+        """
+        selector = SEL["prov_search_type_tin_npi"]
+
+        # State Wait: ensure page is fully settled before checking DOM
+        await self.page.wait_for_load_state("domcontentloaded", timeout=30000)
+        try:
+            await self.page.wait_for_load_state("networkidle", timeout=30000)
+        except Exception:
+            logger.warning("Provider search: networkidle timeout — continuing with DOM check")
+
+        # Now check for the element
+        try:
+            await self.page.wait_for_selector(selector, state="visible", timeout=15000)
+            return  # Success
+        except Exception:
+            pass  # Fall through to retry
+
+        # Retry: wait for another network settle + check again
+        logger.warning("Provider search page not ready — retrying after settle")
+        await self.page.wait_for_timeout(3000)
+        try:
+            await self.page.wait_for_load_state("networkidle", timeout=15000)
+        except Exception:
+            pass
+        # Final attempt — if this fails, the exception propagates to caller
+        await self.page.wait_for_selector(selector, state="visible", timeout=15000)
+
+    async def _extract_provider_results(self) -> list[dict]:
+        """Extract all provider rows from the search results grid.
+
+        Reads the grid headers dynamically, then maps each row's cells to
+        the corresponding header. This handles any column order the portal uses.
+
+        Returns list of dicts with provider details (name, address, city, state, zip, etc.)
+        """
+        return await self.page.evaluate("""
+            () => {
+                const grid = document.querySelector('#asPrimary_ctl00_gvSearchProviders');
+                if (!grid) return [];
+
+                const rows = grid.querySelectorAll('tr');
+                if (rows.length < 2) return [];
+
+                // Read headers from first row
+                const headerCells = rows[0].querySelectorAll('th, td');
+                const headers = [];
+                for (const h of headerCells) {
+                    headers.push((h.textContent || '').trim().toLowerCase());
+                }
+
+                // Map each data row
+                const results = [];
+                for (let i = 1; i < rows.length; i++) {
+                    const cells = rows[i].querySelectorAll('td');
+                    const row = { _raw_headers: headers };
+
+                    for (let j = 0; j < cells.length; j++) {
+                        const text = (cells[j].textContent || '').trim();
+                        const header = j < headers.length ? headers[j] : 'col_' + j;
+
+                        // Store raw column data by index for debugging
+                        row['col_' + j] = text;
+
+                        // Map known header patterns to standard keys
+                        if (header.includes('name') || header.includes('provider')) {
+                            row['name'] = text;
+                        } else if (header.includes('address') && !header.includes('city')) {
+                            row['address'] = text;
+                        } else if (header.includes('city')) {
+                            row['city'] = text;
+                        } else if (header === 'state' || header === 'st' || header === 'st.') {
+                            row['state'] = text;
+                        } else if (header.includes('zip') || header.includes('postal')) {
+                            row['zip'] = text;
+                        } else if (header.includes('npi')) {
+                            row['npi'] = text;
+                        } else if (header.includes('phone') || header.includes('fax')) {
+                            row['phone'] = text;
+                        } else if (header.includes('specialty') || header.includes('type')) {
+                            row['specialty'] = text;
+                        }
+                    }
+
+                    // Fallback: if no named columns matched, try positional mapping
+                    // Carelon grid: Name | Address | City | Specialty
+                    if (!row['name'] && row['col_0']) row['name'] = row['col_0'];
+                    if (!row['address'] && row['col_1']) row['address'] = row['col_1'];
+                    if (!row['city'] && row['col_2']) row['city'] = row['col_2'];
+                    if (!row['specialty'] && row['col_3']) row['specialty'] = row['col_3'];
+
+                    // Also capture the full text of the row for fuzzy matching
+                    row['_full_text'] = (rows[i].textContent || '').trim();
+                    results.push(row);
+                }
+                return results;
+            }
+        """)
+
+    def _match_provider_by_name(self, providers: list[dict], match_name: str) -> int:
+        """Match provider by first + last name against the grid Name column.
+
+        Portal grid shows name as "LAST, FIRST" (e.g. "TESFA, GANANA").
+        We check if all name tokens from RIS appear in the grid name (case-insensitive).
+
+        Returns index of first match, or -1 if no match.
+        """
+        tokens = [t.lower().strip() for t in match_name.split() if t.strip()]
+        if not tokens:
+            return -1
+
+        for i, p in enumerate(providers):
+            grid_name = (p.get("name") or "").lower()
+            if all(token in grid_name for token in tokens):
+                return i
+
+        logger.info(f"No name match found for '{match_name}'")
+        return -1
+
+    def _match_provider_by_address(self, providers: list[dict], match_address: str) -> int:
+        """Find the provider whose address best matches the given address.
+
+        The portal grid shows: Name | Address (street) | City | Specialty.
+        match_address can be a full address string like "2840 Legacy Dr, Frisco, TX 75034"
+        or just the street portion.
+
+        Uses case-insensitive substring matching. Returns the index of the
+        best match, or 0 (first) if no match found.
+        """
+        if not match_address:
+            return 0
+
+        match_lower = match_address.lower().strip()
+
+        # Try street address match (address column)
+        for i, p in enumerate(providers):
+            addr = (p.get("address") or "").lower().strip()
+            if addr and (match_lower in addr or addr in match_lower):
+                return i
+
+        # Try full row text match (address might be in the full string)
+        for i, p in enumerate(providers):
+            full_text = (p.get("_full_text") or "").lower()
+            if match_lower in full_text:
+                return i
+
+        # Try matching street number + street name (first 2 tokens)
+        match_parts = match_lower.replace(",", " ").split()
+        if len(match_parts) >= 2:
+            street_key = " ".join(match_parts[:2])  # e.g. "2840 legacy"
+            for i, p in enumerate(providers):
+                addr = (p.get("address") or "").lower()
+                if street_key in addr:
+                    return i
+
+        # Try city match as a secondary signal
+        for i, p in enumerate(providers):
+            city = (p.get("city") or "").lower().strip()
+            if city and city in match_lower:
+                return i
+
+        logger.info(f"No address match found for '{match_address}' — defaulting to first")
+        return 0
+
+    async def _handle_fax_modal(self, fax: str = "") -> None:
+        """Handle the 'Ordering Provider Fax Number' popup after provider selection.
+
+        Live testing (April 7 2026) confirmed this popup appears after clicking
+        a provider. It has a fax number input and a Save button. The clinical
+        SPA will NOT initialize (GetCase returns null) until this popup is
+        dismissed by filling the fax and clicking Save.
+        """
+        import asyncio
+
+        logger.info(f"_handle_fax_modal: checking for fax popup (fax={fax})")
+
+        # Wait briefly for the popup to render
+        await asyncio.sleep(1)
+
+        # Check if the fax field is visible (indicates popup is showing)
+        fax_field = SEL["prov_fax"]  # #asPrimary_ctl00_txbFax
+        try:
+            fax_el = await self.page.wait_for_selector(
+                fax_field, state="visible", timeout=5000
+            )
+        except Exception:
+            logger.info("_handle_fax_modal: No fax popup detected — skipping")
+            return
+
+        if not fax_el:
+            logger.info("_handle_fax_modal: Fax field not found — skipping")
+            return
+
+        logger.info("_handle_fax_modal: Fax popup detected!")
+
+        # Strip fax to pure 10 digits — portal validates "Must be 10 digits"
+        # and keeps the Save button disabled until the input is exactly 10 digits
+        import re
+        digits_only = re.sub(r'\D', '', fax) if fax else ""
+
+        if not digits_only:
+            # Try to extract from pre-filled value
+            existing = await fax_el.input_value()
+            digits_only = re.sub(r'\D', '', existing) if existing else ""
+
+        if digits_only and len(digits_only) >= 10:
+            digits_only = digits_only[:10]  # Take first 10 digits
+            # Clear the field by selecting all and deleting — triggers portal JS events
+            await fax_el.click()
+            await self.page.keyboard.press("Control+a")
+            await self.page.keyboard.press("Backspace")
+            await asyncio.sleep(0.3)
+            # Type digits one by one — this triggers keyup/input events that
+            # the portal JS uses to validate and enable the Save button
+            await fax_el.type(digits_only, delay=50)
+            logger.info(f"_handle_fax_modal: Typed fax digits: {digits_only}")
+        else:
+            logger.warning(f"_handle_fax_modal: No valid 10-digit fax — digits='{digits_only}'")
+
+        # Wait for portal JS validation to enable the Save button
+        await asyncio.sleep(1)
+
+        # The Save button is: <button id="save" type="button" class="button popup-buttons-disabled">Save</button>
+        # It becomes enabled (class changes) once fax passes 10-digit validation
+        save_clicked = False
+        try:
+            # Wait for Save button to become enabled (class loses "popup-buttons-disabled")
+            save_btn = await self.page.wait_for_selector(
+                "button#save:not(.popup-buttons-disabled)", timeout=3000
+            )
+            if save_btn:
+                await save_btn.click()
+                save_clicked = True
+                logger.info("_handle_fax_modal: Clicked enabled Save button")
+        except Exception:
+            # If the enabled selector doesn't work, try clicking it directly
+            logger.info("_handle_fax_modal: Save button still disabled, trying direct click")
+            try:
+                await self.page.evaluate("""() => {
+                    const btn = document.querySelector('button#save');
+                    if (btn) {
+                        btn.classList.remove('popup-buttons-disabled');
+                        btn.click();
+                        return true;
+                    }
+                    return false;
+                }""")
+                save_clicked = True
+                logger.info("_handle_fax_modal: Force-clicked Save via JS (removed disabled class)")
+            except Exception as e:
+                logger.warning(f"_handle_fax_modal: JS force-click failed: {e}")
+
+        if save_clicked:
+            # Wait for the popup to close and page to settle
+            await self.reader.wait_for_postback()
+            logger.info("_handle_fax_modal: Fax popup handled successfully")
+        else:
+            logger.error("_handle_fax_modal: Could NOT click Save — clinical SPA may not initialize!")
+
+    # --- ASP.NET Async Postback Helper ---
+
+    async def postback_hdnaction(self, action_value: int, timeout_ms: int = 60000) -> dict:
+        """Trigger a full-page form submission with hdnAction to transition pages.
+
+        HAR-proven mechanism for page transitions in the Carelon portal:
+          - hdnAction=20: clinical SPA → exam summary page
+          - hdnAction=6:  exam summary → facility search page
+          - hdnAction=17: exam review → order summary page
+
+        The clinical SPA runs INSIDE Default.aspx — the hidden ASP.NET form
+        with __VIEWSTATE and hdnAction still exists in the DOM even when the
+        SPA has taken over the URL (e.g. /exam-entry, /pathway-questions).
+        The SPA submits this hidden form to navigate back to WebForms.
+
+        HAR shows this as a full document navigation (sec-fetch-dest: document),
+        not an async XHR postback.
+        """
+        import asyncio
+        logger.info(f"Triggering hdnAction={action_value} form submission")
+
+        try:
+            # Find the hidden form and set hdnAction — search broadly since
+            # the SPA may alter the DOM structure
+            setup = await self.page.evaluate(f"""() => {{
+                // Search strategies for hdnAction field:
+                // 1. By exact ID (ASP.NET underscore format)
+                // 2. By name attribute (ASP.NET dollar format)
+                // 3. By partial ID match
+                // 4. Create it if not found (the form exists but field may be missing)
+                let hdnAction = document.getElementById('asPrimary_ctl00_hdnAction');
+                if (!hdnAction) {{
+                    hdnAction = document.querySelector('[name="asPrimary$ctl00$hdnAction"]');
+                }}
+                if (!hdnAction) {{
+                    hdnAction = document.querySelector('[id*="hdnAction"]');
+                }}
+                if (!hdnAction) {{
+                    hdnAction = document.querySelector('input[name*="hdnAction"]');
+                }}
+
+                // Find the ASP.NET form
+                const form = document.querySelector('form[action*="Default.aspx"]') ||
+                             document.querySelector('form[id="aspnetForm"]') ||
+                             document.forms[0];
+
+                if (!form) {{
+                    return {{ error: 'No form found on page', url: window.location.href }};
+                }}
+
+                // If hdnAction field doesn't exist, create it inside the form
+                if (!hdnAction) {{
+                    hdnAction = document.createElement('input');
+                    hdnAction.type = 'hidden';
+                    hdnAction.name = 'asPrimary$ctl00$hdnAction';
+                    hdnAction.id = 'asPrimary_ctl00_hdnAction';
+                    form.appendChild(hdnAction);
+                }}
+
+                hdnAction.value = '{action_value}';
+
+                // Also set __ASYNCPOST (HAR shows it as 'true' in form data)
+                let asyncPost = document.querySelector('[name="asPrimary$ctl00$__ASYNCPOST"]') ||
+                                document.getElementById('asPrimary_ctl00___ASYNCPOST');
+                if (!asyncPost) {{
+                    asyncPost = document.createElement('input');
+                    asyncPost.type = 'hidden';
+                    asyncPost.name = 'asPrimary$ctl00$__ASYNCPOST';
+                    form.appendChild(asyncPost);
+                }}
+                asyncPost.value = 'true';
+
+                return {{
+                    ok: true,
+                    formAction: form.action || form.getAttribute('action'),
+                    formId: form.id,
+                    hdnActionFound: !!document.getElementById('asPrimary_ctl00_hdnAction') ||
+                                    !!document.querySelector('[name="asPrimary$ctl00$hdnAction"]'),
+                    fieldCount: form.elements.length,
+                    hasViewState: !!form.querySelector('[name="__VIEWSTATE"]'),
+                    url: window.location.href,
+                }};
+            }}""")
+
+            logger.info(f"hdnAction={action_value} setup: {setup}")
+
+            if isinstance(setup, dict) and setup.get("error"):
+                return _fail(setup["error"])
+
+            # Submit the form — HAR shows this as a full document navigation
+            # Use page.evaluate to submit, then wait for navigation
+            async with self.page.expect_navigation(
+                wait_until="load", timeout=timeout_ms
+            ):
+                await self.page.evaluate("""() => {
+                    const form = document.querySelector('form[action*="Default.aspx"]') ||
+                                 document.querySelector('form[id="aspnetForm"]') ||
+                                 document.forms[0];
+                    if (form) form.submit();
+                }""")
+
+            # Wait for ViewState (confirms ASP.NET rendered the new page)
+            # __VIEWSTATE is type="hidden" — use state="attached" not default "visible"
+            try:
+                await self.page.wait_for_selector("[name='__VIEWSTATE']", state="attached", timeout=timeout_ms)
+            except Exception as e:
+                err_name = type(e).__name__
+                if "TargetClosedError" in err_name or "closed" in str(e).lower():
+                    logger.warning(f"hdnAction={action_value}: page/browser closed during navigation")
+                    raise
+                logger.warning(f"hdnAction={action_value}: ViewState not found after navigation")
+
+            # Settle time for client-side JS init (clinical SPA may re-load)
+            await asyncio.sleep(2)
+
+            # Verify we're still on the portal (not redirected to login)
+            url = self.page.url
+            logger.info(f"After hdnAction={action_value}: URL={url}")
+
+            if "User Confirmation" in await self.page.title() or "login" in url.lower():
+                return _fail("Session expired — redirected to login after postback")
+
+            return _ok({"url": url})
+
+        except Exception as e:
+            logger.error(f"hdnAction={action_value} postback failed: {e}")
+            return _fail(f"hdnAction postback failed: {e}")
+
+    # --- SOP Step 8: Facility Search ---
+
+    async def search_facility(
+        self,
+        center_npi: str,
+        state: str = "",
+        facility_name: str = "",
+        match_address: str = "",
+        zip_code: str = "",
+        fax: str = "",
+    ) -> dict:
+        """Search for rendering facility by NPI + name, match by address, select.
+
+        Uses CenterNPI, CenterDesc, CenterAddress, CenterState from MongoDB.
+        Matching priority (when multiple results):
+          1. Address match — CenterAddress from RIS (disambiguates locations)
+          2. Default first — select first result
+
+        If in-network search returns no results, tries OON (out-of-network) expansion.
+
+        Returns:
+            {"ok": True, "data": {"facility_match": {...}}} on success
+            {"ok": False, "message": "..."} on failure
+        """
+        logger.info(
+            f"Searching facility: NPI={center_npi}, name={facility_name}, "
+            f"state={state}, address={match_address}"
+        )
+
+        # Wait for facility search page to load.
+        # HAR shows hdnAction=6 page transition can take 25-35 seconds.
+        try:
+            await self.page.wait_for_selector(SEL["fac_advanced_link"], state="visible", timeout=45000)
+        except Exception:
+            await self.page.wait_for_load_state("domcontentloaded")
+            # Give the page a second chance after DOMContentLoaded
+            try:
+                await self.page.wait_for_selector(SEL["fac_advanced_link"], state="visible", timeout=15000)
+            except Exception:
+                pass  # Fall through — click attempt below will produce a clear error
+
+        # Click advanced search link
+        try:
+            await self.behavior.click(SEL["fac_advanced_link"], action_type="buttonClick")
+            await self.reader.wait_for_postback()
+        except Exception as e:
+            return _fail(f"Could not open advanced facility search: {e}")
+
+        # Enter NPI
+        await self.behavior.type_text(SEL["fac_npi"], center_npi)
+
+        # Enter facility name — use first word only for partial match
+        # HAR shows real reps search with just one keyword (e.g., "envision")
+        # to avoid mismatches on multi-word names
+        if facility_name:
+            short_name = facility_name.split()[0]  # "Envision" from "Envision Imaging Flower Mound"
+            await self.behavior.type_text(SEL["fac_name"], short_name)
+
+        # Select state (only if provided — NPI is sufficient for search)
+        if state:
+            await self.behavior.select_option(SEL["fac_state"], state)
+
+        # Optional zip code
+        if zip_code:
+            await self.behavior.type_text(SEL["fac_zip"], zip_code)
+
+        # Click Find
+        await self.behavior.click(SEL["fac_find_btn"], action_type="buttonClick")
+        await self.reader.wait_for_postback()
+
+        # Read what the portal says
+        messages = await self.reader.read_messages()
+        if messages.error:
+            return _fail(messages.error, data={"npi": center_npi, "state": state})
+
+        # Check for results
+        has_results = await self.reader.has_results("provider")
+
+        # OON fallback: if in-network search returned nothing, expand to out-of-network
+        if not has_results:
+            try:
+                oon_btn = await self.page.query_selector("[id*='cmdExpOONSearch']")
+                if oon_btn:
+                    logger.info("Facility not found in-network — expanding to OON search")
+                    await self.behavior.click("[id*='cmdExpOONSearch']", action_type="buttonClick")
+                    await self.reader.wait_for_postback()
+                    has_results = await self.reader.has_results("provider")
+            except Exception as e:
+                logger.warning(f"OON expansion failed: {e}")
+
+        # NPI-only retry: if NPI+name+zip returned nothing, try NPI+state only
+        # (facility name/zip in portal may differ from MongoDB CenterDesc)
+        if not has_results and (facility_name or zip_code):
+            logger.info("Facility NPI+name+zip search failed — retrying with NPI+state only")
+            try:
+                # Clear name and zip fields, keep NPI and state
+                await self.page.evaluate(f"""() => {{
+                    const nameField = document.querySelector('{SEL["fac_name"]}');
+                    if (nameField) nameField.value = '';
+                    const zipField = document.querySelector('{SEL["fac_zip"]}');
+                    if (zipField) zipField.value = '';
+                }}""")
+                await self.behavior.click(SEL["fac_find_btn"], action_type="buttonClick")
+                await self.reader.wait_for_postback()
+                has_results = await self.reader.has_results("provider")
+                if not has_results:
+                    # Try OON on NPI-only search too
+                    try:
+                        oon_btn = await self.page.query_selector("[id*='cmdExpOONSearch']")
+                        if oon_btn:
+                            logger.info("NPI-only not found in-network — expanding to OON")
+                            await self.behavior.click("[id*='cmdExpOONSearch']", action_type="buttonClick")
+                            await self.reader.wait_for_postback()
+                            has_results = await self.reader.has_results("provider")
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.warning(f"NPI-only retry failed: {e}")
+
+        if not has_results:
+            return _fail(
+                messages.error or f"Facility NPI {center_npi} not found in {state}",
+                data={"npi": center_npi, "state": state, "facility_name": facility_name},
+            )
+
+        # Extract all facility results (reuses provider grid — same gvSearchProviders)
+        facilities = await self._extract_provider_results()
+        logger.info(f"Found {len(facilities)} facility result(s):")
+        for i, f in enumerate(facilities):
+            logger.info(
+                f"  [{i}] {f.get('name', '?')} — {f.get('address', '?')}, "
+                f"{f.get('city', '?')}"
+            )
+
+        if not facilities:
+            return _fail(
+                f"Facility NPI {center_npi} search returned grid but no selectable rows",
+                data={"npi": center_npi, "state": state},
+            )
+
+        # Select best match: address → default first
+        selected_index = 0
+        match_method = "single_result" if len(facilities) == 1 else "default_first"
+
+        if len(facilities) > 1 and match_address:
+            idx = self._match_provider_by_address(facilities, match_address)
+            # Verify it actually matched (not just default 0)
+            addr_lower = match_address.lower().strip()
+            candidate_addr = (facilities[idx].get("address") or "").lower()
+            if addr_lower in candidate_addr or candidate_addr in addr_lower or idx > 0:
+                selected_index = idx
+                match_method = "address"
+                logger.info(f"Facility address match at index {idx}: {facilities[idx].get('address')}")
+
+        if match_method == "default_first":
+            logger.info("No address match — selecting first facility")
+
+        # Click the selected facility's Select button
+        try:
+            if selected_index == 0:
+                await self.behavior.click(
+                    "[id*='gvSearchProviders'] [id*='cmdSelectFacility']",
+                    action_type="searchResult",
+                )
+            else:
+                # Click specific row by index via JS
+                await self.page.evaluate(f"""
+                    () => {{
+                        const btns = document.querySelectorAll(
+                            "[id*='gvSearchProviders'] [id*='cmdSelectFacility']"
+                        );
+                        if (btns[{selected_index}]) {{
+                            btns[{selected_index}].click();
+                            return true;
+                        }}
+                        return false;
+                    }}
+                """)
+            await self.reader.wait_for_postback()
+        except Exception as e:
+            return _fail(f"Could not select facility: {e}")
+
+        # Set fax hidden fields before clicking Continue
+        # Reference: carelon-sub continue_after_facility() — portal requires these
+        # hdnFaxMandatory=false bypasses the fax validation gate
+        # hdnFaxEntered stores the fax for the order
+        try:
+            await self.page.evaluate(
+                f"""() => {{
+                    const faxMandatory = document.getElementById('asPrimary_ctl00_hdnFaxMandatory');
+                    if (faxMandatory) faxMandatory.value = 'false';
+
+                    const faxEntered = document.getElementById('asPrimary_ctl00_hdnFaxEntered');
+                    if (faxEntered) faxEntered.value = '{fax}';
+                }}"""
+            )
+            logger.info(f"Set fax hidden fields: hdnFaxMandatory=false, hdnFaxEntered={fax}")
+        except Exception as e:
+            logger.warning(f"Could not set fax hidden fields: {e}")
+
+        # Click Continue on facility confirmation page
+        try:
+            await self.page.wait_for_selector(SEL["fac_continue"], timeout=10000)
+            await self.behavior.click(SEL["fac_continue"], action_type="buttonClick")
+            await self.reader.wait_for_postback()
+        except Exception as e:
+            messages = await self.reader.read_messages()
+            return _fail(messages.error or f"Facility continue failed: {e}")
+
+        post_messages = await self.reader.read_messages()
+        if post_messages.error:
+            return _fail(post_messages.error)
+
+        selected = facilities[selected_index] if selected_index < len(facilities) else None
+        return _ok({
+            "info": post_messages.info,
+            "facility_match": {
+                "name": selected.get("name") if selected else None,
+                "address": selected.get("address") if selected else None,
+                "match_method": match_method,
+                "results_count": len(facilities),
+                "selected_index": selected_index,
+                "fax_entered": fax or None,
+                "center_address": match_address or None,
+            },
+        })
+
+    # --- SOP Step 9: Submit ---
+
+    async def submit_request(self) -> dict:
+        """Click Submit This Request and extract confirmation.
+
+        Returns:
+            {"ok": True, "data": {"order_id": ..., "status": ..., ...}} on success
+            {"ok": False, "message": "portal error text"} on failure
+        """
+        logger.info("Submitting order request")
+        try:
+            await self.behavior.click(SEL["submit_request"], action_type="buttonClick")
+            await self.reader.wait_for_postback(timeout_ms=45000)
+        except Exception as e:
+            messages = await self.reader.read_messages()
+            return _fail(messages.error or f"Submit failed: {e}")
+
+        # Read any messages
+        messages = await self.reader.read_messages()
+        if messages.error:
+            return _fail(messages.error)
+
+        # Extract confirmation details
+        confirmation = await self._extract_confirmation()
+        confirmation["info"] = messages.info
+
+        return _ok(confirmation)
+
+    async def _extract_confirmation(self) -> dict:
+        """Extract confirmation details from the result page."""
+        selectors_map = {
+            "order_id": SEL["conf_order_id"],
+            "status": SEL["conf_status"],
+            "valid_from": SEL["conf_valid_from"],
+            "valid_through": SEL["conf_valid_through"],
+            "health_plan": SEL["conf_health_plan"],
+        }
+
+        result = await self.reader.read_multiple(selectors_map)
+        logger.info(f"Confirmation: Order={result.get('order_id')}, Status={result.get('status')}")
+        return result
+
+    async def download_auth_pdf(self) -> bytes | None:
+        """Download the authorization PDF from the confirmation page.
+
+        HAR-proven two-step flow:
+          1. Click visible "Save as PDF" button (cmdSavePdf) → ASP.NET postback
+          2. Server responds with same page + auto-click script that triggers
+             hidden <a id="cmdSaveAsPdf" href="Download.aspx?enc=..."> in new tab
+          3. New tab loads Download.aspx which serves the actual PDF
+
+        We intercept step 2 by waiting for the new page (popup) that opens
+        from the auto-click, then read the PDF bytes from that page's response.
+
+        Returns:
+            PDF bytes on success, None on failure.
+        """
+        import asyncio
+
+        try:
+            # Step 1: Click the visible "Save as PDF" submit button
+            # This triggers a postback that generates the Download.aspx?enc= URL
+            save_btn = await self.page.query_selector(SEL.get("save_pdf_button", "#asPrimary_ctl00_cmdSavePdf"))
+            if not save_btn:
+                save_btn = await self.page.query_selector("[id*='cmdSavePdf']")
+            if not save_btn:
+                logger.warning("No cmdSavePdf button found on confirmation page")
+                return None
+
+            logger.info("Clicking 'Save as PDF' button (postback)...")
+
+            # The postback response includes an auto-click script that opens
+            # Download.aspx in a new tab. We need to intercept that popup.
+            # Use expect_page to catch the new tab opened by the auto-click.
+            try:
+                async with self.page.context.expect_page(timeout=30000) as popup_info:
+                    await save_btn.click()
+                    # Wait for postback to complete and auto-click script to fire
+                    await self.reader.wait_for_postback(timeout_ms=25000)
+
+                popup = await popup_info.value
+                logger.info(f"PDF popup opened: {popup.url[:120]}")
+
+                # Wait for the popup to load the PDF
+                await popup.wait_for_load_state("load", timeout=15000)
+
+                # Read the PDF bytes from the popup's response
+                # Download.aspx serves the PDF directly
+                pdf_bytes = await popup.evaluate("""
+                    async () => {
+                        try {
+                            const resp = await fetch(window.location.href);
+                            const buf = await resp.arrayBuffer();
+                            return Array.from(new Uint8Array(buf));
+                        } catch {
+                            return null;
+                        }
+                    }
+                """)
+
+                if pdf_bytes:
+                    pdf_data = bytes(pdf_bytes)
+                    logger.info(f"Auth PDF downloaded via popup: {len(pdf_data)} bytes")
+                    await popup.close()
+                    return pdf_data if len(pdf_data) > 100 else None
+
+                await popup.close()
+                logger.warning("Could not read PDF bytes from popup")
+
+            except Exception as popup_err:
+                logger.info(f"Popup approach failed ({popup_err}), trying direct Download.aspx fetch...")
+
+            # Fallback: Extract the Download.aspx?enc= URL from the page and fetch directly
+            download_url = await self.page.evaluate("""
+                () => {
+                    const link = document.querySelector('[id*="cmdSaveAsPdf"]');
+                    return link ? link.href : null;
+                }
+            """)
+
+            if download_url:
+                logger.info(f"Fetching PDF directly from: {download_url[:100]}...")
+                # Use a new page to fetch the PDF (same session cookies)
+                pdf_page = await self.page.context.new_page()
+                try:
+                    resp = await pdf_page.goto(download_url, wait_until="load", timeout=15000)
+                    if resp and resp.ok:
+                        pdf_bytes = await resp.body()
+                        logger.info(f"Auth PDF downloaded via direct fetch: {len(pdf_bytes)} bytes")
+                        return pdf_bytes if len(pdf_bytes) > 100 else None
+                    else:
+                        logger.warning(f"PDF fetch failed: status={resp.status if resp else 'no response'}")
+                finally:
+                    await pdf_page.close()
+            else:
+                logger.warning("No Download.aspx URL found in cmdSaveAsPdf link")
+
+            return None
+
+        except Exception as e:
+            logger.warning(f"Failed to download auth PDF: {e}")
+            return None
+        finally:
+            # Close any popup tabs that opened
+            try:
+                for p in self.page.context.pages:
+                    if p != self.page:
+                        await p.close()
+            except Exception:
+                pass

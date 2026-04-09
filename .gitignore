@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Node
+node_modules/
+.next/
+out/
+
+# Environment
+.env
+.env.local
+.env.production
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Browser profiles (contain session data)
+profiles/
+
+# Docker volumes
+pgdata/
+
+# Alembic
+*.pyc
+
+# Deployment credentials
+.deploy-creds
+.env
+
+# Deploy state
+.last-deploy

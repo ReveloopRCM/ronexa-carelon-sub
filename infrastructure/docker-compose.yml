@@ -1,0 +1,24 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    ports: ["5432:5432"]
+    environment:
+      POSTGRES_DB: ronexa
+      POSTGRES_USER: ronexa
+      POSTGRES_PASSWORD: dev_password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+
+  restate:
+    image: docker.io/restatedev/restate:latest
+    ports:
+      - "8080:8080"   # ingress
+      - "9070:9070"   # admin
+    depends_on: [postgres]
+
+volumes:
+  pgdata:

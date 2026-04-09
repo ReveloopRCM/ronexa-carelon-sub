@@ -1,0 +1,233 @@
+"""FinalizeService — Restate Service for batch resolving approved cases.
+
+Queries APPROVED_FOR_SUBMIT cases and resolves their CaseWorkflow awakeables.
+CaseWorkflow then resumes and dispatches run_finalize to WorkerSession.
+
+No browser management here — FinalizeService just resolves awakeables.
+WorkerSession handles the actual portal work.
+"""
+from __future__ import annotations
+
+import logging
+import time
+
+from restate import Service, Context
+
+logger = logging.getLogger(__name__)
+
+finalize_service = Service("FinalizeService")
+
+
+@finalize_service.handler()
+async def submit_batch(ctx: Context, batch_data: dict) -> dict:
+    """Resolve awakeables for approved cases, triggering portal replay + submit.
+
+    The browser is logged in once by the first case's PriorAuth resume.
+    Subsequent cases reuse the same browser via _ensure_session_direct().
+
+    Args:
+        batch_data: {
+            "case_ids": list[str] (optional — if empty, queries APPROVED_FOR_SUBMIT),
+            "batch_size": int (default 10),
+        }
+
+    Returns:
+        {"submitted": int, "failed": list, "duration_s": float}
+    """
+    case_ids = batch_data.get("case_ids", [])
+    batch_size = batch_data.get("batch_size", 10)
+
+    start = time.time()
+
+    # Load cases if not provided
+    if not case_ids:
+        case_ids = await ctx.run(
+            "load_approved", _load_approved_case_ids, args=(batch_size,)
+        )
+
+    if not case_ids:
+        return {"submitted": 0, "failed": [], "duration_s": 0, "message": "No cases to submit"}
+
+    logger.info(f"FinalizeService: submitting {len(case_ids)} approved cases")
+
+    submitted = 0
+    failed = []
+
+    for i, case_id in enumerate(case_ids):
+        logger.info(f"FinalizeService: case {i + 1}/{len(case_ids)} — {case_id}")
+
+        try:
+            # Build the awakeable payload from reviewed questions
+            payload = await ctx.run(
+                f"build_payload_{case_id}",
+                _build_resolve_payload,
+                args=(case_id,),
+            )
+
+            if not payload:
+                failed.append({"case_id": case_id, "error": "No awakeable or answers found"})
+                continue
+
+            awakeable_id = payload.pop("_awakeable_id")
+
+            # Resolve the awakeable — this triggers PriorAuth to resume
+            # PriorAuth will call _run_compiler_pass with resume_answers
+            # which calls _ensure_session_direct() — reuses browser if alive
+            ctx.resolve_awakeable(awakeable_id, payload)
+            logger.info(f"FinalizeService: resolved awakeable for {case_id}")
+
+            # Brief pause between cases to let PriorAuth process
+            # The portal replay takes 30-60s per case
+            import asyncio
+            await asyncio.sleep(2)
+
+            submitted += 1
+
+        except Exception as e:
+            logger.error(f"FinalizeService: case {case_id} failed: {e}")
+            failed.append({"case_id": case_id, "error": str(e)})
+
+    duration = round(time.time() - start, 2)
+    logger.info(
+        f"FinalizeService: batch complete — {submitted} submitted, "
+        f"{len(failed)} failed, {duration}s"
+    )
+
+    return {
+        "submitted": submitted,
+        "failed": failed,
+        "duration_s": duration,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+
+async def _load_approved_case_ids(batch_size: int) -> list[str]:
+    """Query cases in APPROVED_FOR_SUBMIT state."""
+    from app.db.database import async_session_factory
+    from app.db.models import Case, CaseState
+    from sqlalchemy import select
+
+    async with async_session_factory() as db:
+        result = await db.execute(
+            select(Case.id)
+            .where(Case.state == CaseState.APPROVED_FOR_SUBMIT)
+            .order_by(Case.sort_priority.desc(), Case.ingested_at)
+            .limit(batch_size)
+        )
+        return [r[0] for r in result.all()]
+
+
+async def _build_resolve_payload(case_id: str) -> dict | None:
+    """Build the awakeable resolve payload from reviewed questions.
+
+    Returns:
+        {
+            "_awakeable_id": str,  (popped before resolving)
+            "action": "approved" | "edited",
+            "answers": [...portal-format answers...],
+            "changed_group_id": int | None,
+            "answer": dict | None,
+        }
+    """
+    from app.db.database import async_session_factory
+    from app.db import repositories as repo
+    from app.db.models import ReviewState
+
+    async with async_session_factory() as db:
+        questions = await repo.get_questions_for_case(db, case_id)
+        if not questions:
+            return None
+
+        # Find the awakeable ID — check job first (CaseWorkflow stores it there),
+        # then fall back to questions (PriorAuth legacy stores it there)
+        from app.db.models import SubmissionJob
+        from sqlalchemy import select
+
+        awakeable_id = None
+        job_result = await db.execute(
+            select(SubmissionJob.awakeable_id).where(
+                SubmissionJob.case_id == case_id
+            )
+        )
+        job_row = job_result.first()
+        if job_row and job_row[0]:
+            awakeable_id = job_row[0]
+        else:
+            # Fallback: check questions (legacy PriorAuth path)
+            for q in questions:
+                if q.awakeable_id:
+                    awakeable_id = q.awakeable_id
+                    break
+
+        if not awakeable_id:
+            logger.warning(f"Case {case_id}: no awakeable_id found")
+            return None
+
+        # Check for edits — find earliest changed group
+        earliest_changed_group = None
+        changed_answer_dict = None
+        answers = []
+
+        for q in questions:
+            # Determine the final answer (rep_answer if edited, ai_answer if approved)
+            if q.rep_answer and q.rep_answer.get("Value"):
+                final_value = q.rep_answer["Value"]
+                is_edited = True
+            else:
+                final_value = (
+                    q.ai_answer.get("Value")
+                    if isinstance(q.ai_answer, dict)
+                    else q.ai_answer
+                )
+                is_edited = False
+
+            # Track earliest edit for backtrack
+            if is_edited and earliest_changed_group is None:
+                earliest_changed_group = q.group_id
+                changed_answer_dict = {
+                    "GroupId": q.group_id,
+                    "QuestionId": q.portal_question_id,
+                    "Type": q.question_type,
+                    "Value": final_value,
+                }
+
+            # Build portal-format answer
+            if isinstance(q.ai_answer, dict) and "Values" in q.ai_answer:
+                portal_ans = dict(q.ai_answer)
+                if is_edited:
+                    val = final_value
+                    portal_ans["Values"] = val if isinstance(val, list) else [val]
+                answers.append(portal_ans)
+            else:
+                answers.append({
+                    "QuestionId": q.portal_question_id,
+                    "QuestionType": q.question_type,
+                    "GroupId": q.group_id,
+                    "Sequence": getattr(q, "sequence", 0) or 0,
+                    "Values": (
+                        final_value
+                        if isinstance(final_value, list)
+                        else [final_value] if final_value else []
+                    ),
+                })
+
+        # Build payload
+        if earliest_changed_group is not None:
+            payload = {
+                "_awakeable_id": awakeable_id,
+                "action": "edited",
+                "changed_group_id": earliest_changed_group,
+                "answer": changed_answer_dict,
+            }
+        else:
+            payload = {
+                "_awakeable_id": awakeable_id,
+                "action": "approved",
+                "answers": answers,
+            }
+
+        return payload

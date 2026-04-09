@@ -1,0 +1,272 @@
+"""Shift Manager — rotates Carelon login accounts on day/night schedule.
+
+Each container has 2 accounts (Account A = day, Account B = night).
+At transition, the outgoing account finishes its current case, does a clean
+logout, and the incoming account picks up the queue.
+
+Shift boundaries:
+  DAY:   06:00 – 18:00 local (±15 min jitter)
+  NIGHT: 18:00 – 06:00 local (±15 min jitter)
+
+The shift manager runs as a Restate service so it can call UserWorker VOs
+and benefit from durable execution (crash during transition → retries).
+"""
+from __future__ import annotations
+
+import logging
+import random
+from datetime import datetime, time
+
+from restate import Service, Context
+
+from app.core.settings import settings
+
+logger = logging.getLogger(__name__)
+
+shift_service = Service("ShiftManager")
+
+# Shift boundaries (local time)
+DAY_START = time(6, 0)
+NIGHT_START = time(18, 0)
+JITTER_MINUTES = 15
+
+
+def current_shift() -> str:
+    """Return 'DAY' or 'NIGHT' based on current local time."""
+    now = datetime.now().time()
+    if DAY_START <= now < NIGHT_START:
+        return "DAY"
+    return "NIGHT"
+
+
+@shift_service.handler()
+async def rotate_shifts(ctx: Context, container_id: str) -> dict:
+    """Check if a shift transition is needed and execute it.
+
+    Called periodically (e.g. every 5 minutes) by a cron/scheduler.
+    Idempotent — if the correct account is already active, does nothing.
+    """
+    active_shift = current_shift()
+
+    # Load accounts for this container
+    accounts = await ctx.run(
+        "load_accounts",
+        _load_container_accounts,
+        args=(container_id,),
+    )
+
+    if not accounts:
+        logger.warning(f"No accounts configured for container {container_id}")
+        return {"status": "no_accounts", "container_id": container_id}
+
+    # Find current active and the account that should be active
+    current_active = None
+    target_account = None
+    for acct in accounts:
+        if acct["is_active"]:
+            current_active = acct
+        if acct["shift"] == active_shift:
+            target_account = acct
+
+    if not target_account:
+        return {"status": "no_target", "shift": active_shift}
+
+    # Already correct?
+    if current_active and current_active["id"] == target_account["id"]:
+        return {
+            "status": "no_change",
+            "active_account": target_account["username"],
+            "shift": active_shift,
+        }
+
+    # Transition needed
+    logger.info(
+        f"Container {container_id}: shifting from "
+        f"{current_active['username'] if current_active else 'none'} "
+        f"→ {target_account['username']} ({active_shift})"
+    )
+
+    # Step 1: Shutdown outgoing worker (finish current case, close browser)
+    if current_active:
+        await ctx.run(
+            "shutdown_outgoing",
+            _shutdown_worker,
+            args=(current_active["id"],),
+        )
+        await ctx.run(
+            "deactivate_outgoing",
+            _set_account_active,
+            args=(current_active["id"], False),
+        )
+
+    # Step 2: Add jitter so transitions don't all happen at exactly the same second
+    jitter_seconds = random.randint(0, JITTER_MINUTES * 60)
+    if jitter_seconds > 0:
+        await ctx.sleep(delta=jitter_seconds * 1000)
+
+    # Step 3: Activate incoming account
+    await ctx.run(
+        "activate_incoming",
+        _set_account_active,
+        args=(target_account["id"], True),
+    )
+
+    logger.info(
+        f"Container {container_id}: {target_account['username']} now active "
+        f"(shift={active_shift}, jitter={jitter_seconds}s)"
+    )
+
+    return {
+        "status": "rotated",
+        "from": current_active["username"] if current_active else None,
+        "to": target_account["username"],
+        "shift": active_shift,
+        "jitter_seconds": jitter_seconds,
+    }
+
+
+@shift_service.handler()
+async def start_worker_loop(ctx: Context, config: dict) -> dict:
+    """Start a batch processing session — single login, process N cases.
+
+    Config:
+        account_id: WorkerAccount ID
+        username: Carelon login
+        password: Carelon password
+        mailbox: MFA mailbox
+        container_id: Container this runs on
+        stat_only: STAT lane only
+        max_cases: Max cases per batch (from settings)
+
+    Calls UserWorker.process_batch which handles:
+      - Single login at start
+      - Loop through queue claiming jobs
+      - Per-case error isolation
+      - Session expiry detection + re-login
+      - Browser close when batch complete
+    """
+    account_id = config["account_id"]
+
+    # Check if account is active
+    is_active = await ctx.run(
+        "check_active",
+        _is_account_active,
+        args=(account_id,),
+    )
+    if not is_active:
+        logger.info(f"Account {account_id} deactivated — not starting batch")
+        return {"account_id": account_id, "cases_processed": 0}
+
+    # Read batch size from settings
+    max_cases = config.get("max_cases", 25)
+
+    # Call UserWorker.process_batch — single invocation processes entire batch
+    worker_config = {
+        "username": config["username"],
+        "password": config["password"],
+        "mailbox": config["mailbox"],
+        "container_id": config["container_id"],
+        "stat_only": config.get("stat_only", False),
+        "max_cases": max_cases,
+    }
+
+    import json
+    result_bytes = await ctx.generic_call(
+        service="UserWorker",
+        handler="process_batch",
+        key=account_id,
+        arg=json.dumps(worker_config).encode(),
+    )
+    result = json.loads(result_bytes) if result_bytes else {}
+
+    cases_processed = result.get("processed", 0)
+    login_count = result.get("login_count", 0)
+    logger.info(
+        f"Account {account_id}: batch complete — {cases_processed} cases, "
+        f"{login_count} login(s)"
+    )
+
+    # Update worker stats
+    await ctx.run(
+        "update_stats",
+        _update_account_stats,
+        args=(account_id, cases_processed),
+    )
+
+    return {"account_id": account_id, "cases_processed": cases_processed, "login_count": login_count}
+
+
+# ── DB Helpers ──
+
+
+async def _update_account_stats(account_id: str, cases_processed: int) -> None:
+    """Update worker account stats after a batch."""
+    from app.db.database import async_session_factory
+    from app.db.models import WorkerAccount
+    from datetime import datetime
+    async with async_session_factory() as db:
+        account = await db.get(WorkerAccount, account_id)
+        if account:
+            account.cases_today = (account.cases_today or 0) + cases_processed
+            account.last_login_at = datetime.utcnow()
+        await db.commit()
+
+
+async def _load_container_accounts(container_id: str) -> list[dict]:
+    from app.db.database import async_session_factory
+    from app.db.models import WorkerAccount
+    from sqlalchemy import select
+    async with async_session_factory() as db:
+        result = await db.execute(
+            select(WorkerAccount)
+            .where(WorkerAccount.container_id == container_id)
+            .order_by(WorkerAccount.shift)
+        )
+        accounts = result.scalars().all()
+        return [
+            {
+                "id": a.id,
+                "username": a.username,
+                "shift": a.shift.value,
+                "container_id": a.container_id,
+                "mailbox_address": a.mailbox_address,
+                "is_active": a.is_active,
+            }
+            for a in accounts
+        ]
+
+
+async def _set_account_active(account_id: str, active: bool) -> None:
+    from app.db.database import async_session_factory
+    from app.db.models import WorkerAccount
+    from sqlalchemy import update
+    async with async_session_factory() as db:
+        values = {"is_active": active, "updated_at": datetime.utcnow()}
+        if active:
+            values["cases_today"] = 0  # Reset daily counter on activation
+        await db.execute(
+            update(WorkerAccount).where(WorkerAccount.id == account_id).values(**values)
+        )
+        await db.commit()
+
+
+async def _shutdown_worker(worker_id: str) -> None:
+    """Tell the UserWorker VO to shut down gracefully."""
+    import httpx
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"{settings.RESTATE_URL}/UserWorker/{worker_id}/shutdown",
+                json={},
+                timeout=30.0,
+            )
+    except Exception as e:
+        logger.warning(f"Failed to shutdown worker {worker_id}: {e}")
+
+
+async def _is_account_active(account_id: str) -> bool:
+    from app.db.database import async_session_factory
+    from app.db.models import WorkerAccount
+    async with async_session_factory() as db:
+        acct = await db.get(WorkerAccount, account_id)
+        return acct.is_active if acct else False

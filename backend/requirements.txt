@@ -1,0 +1,61 @@
+# Web framework
+fastapi>=0.115.0
+uvicorn[standard]>=0.34.0
+python-multipart>=0.0.18
+
+# Database
+sqlalchemy[asyncio]>=2.0.36
+asyncpg>=0.30.0
+alembic>=1.14.0
+pgvector>=0.3.6
+
+# Settings
+pydantic-settings>=2.7.0
+
+# Redis
+redis>=5.2.0
+
+# Excel parsing
+openpyxl>=3.1.5
+
+# PDF processing
+pymupdf>=1.25.0
+Pillow>=11.0.0
+
+# LLM
+anthropic>=0.42.0
+
+# Embeddings
+openai>=1.58.0
+
+# Gemini failover
+google-generativeai>=0.8.0
+
+# Restate
+restate-sdk>=0.16.0
+hypercorn>=0.17.0
+
+# Browser automation
+playwright>=1.49.0
+
+# MFA
+msal>=1.31.0
+
+# HTTP client
+httpx>=0.27.0
+
+# Azure
+azure-ai-documentintelligence>=1.0.0
+azure-storage-blob>=12.19.0
+
+# Encryption (API key storage)
+cryptography>=42.0.0
+
+# Jinja2 (prompt templates)
+jinja2>=3.1.0
+
+# Utilities
+python-dateutil>=2.9.0
+pymongo[srv]>=4.6.0
+aiohttp>=3.9
+bcrypt>=4.0

@@ -1,0 +1,245 @@
+{
+  "portal_id": "carelon_provider_portal",
+  "portal_name": "Carelon Provider Portal",
+  "portal_url": "https://www.providerportal.com",
+  "version": "1.0.0",
+
+  "auth": {
+    "type": "okta_idx",
+    "okta_domain_env": "OKTA_DOMAIN",
+    "client_id_env": "OKTA_CLIENT_ID",
+    "username_env": "CARELON_USERNAME",
+    "password_env": "CARELON_PASSWORD",
+    "mfa": {
+      "type": "graph_api",
+      "mailbox_env": "GRAPH_MAILBOX",
+      "poll_interval_ms": 3000,
+      "max_attempts": 20,
+      "subject_pattern": "verification code",
+      "otp_regex": "\\d{6}"
+    },
+    "post_login_steps": []
+  },
+
+  "bot_detection": {
+    "name": "akamai",
+    "api_calls_exempt": true,
+    "page_loads_monitored": true,
+    "retry_on_challenge": true,
+    "max_challenge_retries": 3
+  },
+
+  "intelligence": {
+    "decide": {
+      "model_env": "evaluation",
+      "max_tokens": 500,
+      "temperature": 0.1,
+      "rag": {
+        "enabled": true,
+        "top_k": 5,
+        "min_similarity": 0.75,
+        "pre_filter_fields": ["cpt_code", "carrier_id"]
+      }
+    }
+  },
+
+  "state_machine": {
+    "phases": [
+      "MEMBER_SEARCH",
+      "EXAM_SETUP",
+      "EXAM_PROCESSING",
+      "DIAGNOSIS",
+      "PATHWAY",
+      "CLINICAL_TREE",
+      "SUBMISSION"
+    ]
+  },
+
+  "navigation_phases": [
+    {
+      "id": "MEMBER_SEARCH",
+      "type": "WEBFORM",
+      "description": "Search for patient member in portal",
+      "steps": [
+        {
+          "type": "dom_action",
+          "action": "type",
+          "selector": "#txtLastName",
+          "value_template": "${case.last_name}",
+          "description": "Enter last name"
+        },
+        {
+          "type": "dom_action",
+          "action": "type",
+          "selector": "#txtFirstName",
+          "value_template": "${case.first_name}",
+          "description": "Enter first name"
+        },
+        {
+          "type": "dom_action",
+          "action": "type",
+          "selector": "#txtDOB",
+          "value_template": "${case.dob}",
+          "description": "Enter DOB"
+        },
+        {
+          "type": "dom_action",
+          "action": "type",
+          "selector": "#txtMemberId",
+          "value_template": "${case.policy_num}",
+          "description": "Enter member ID"
+        },
+        {
+          "type": "dom_action",
+          "action": "click",
+          "selector": "#btnSearch",
+          "description": "Click search"
+        },
+        {
+          "type": "wait",
+          "wait_ms": 2000,
+          "description": "Wait for search results"
+        },
+        {
+          "type": "dom_action",
+          "action": "click",
+          "selector": ".search-result-row:first-child",
+          "description": "Select first result"
+        }
+      ]
+    },
+    {
+      "id": "EXAM_SETUP",
+      "type": "API_SEQUENCE",
+      "description": "Create exam and set CPT code",
+      "steps": [
+        {
+          "type": "api_call",
+          "endpoint": "CreateExam",
+          "payload_template": {
+            "providerId": "${provider_id}",
+            "clientId": "${client_id}"
+          },
+          "extract_to": "exam_id",
+          "extract_path": "ExamId",
+          "description": "Create new exam"
+        },
+        {
+          "type": "api_call",
+          "endpoint": "SetExamType",
+          "payload_template": {
+            "examId": "${exam_id}",
+            "cptCode": "${case.cpt_code}"
+          },
+          "description": "Set CPT code on exam"
+        }
+      ]
+    },
+    {
+      "id": "EXAM_PROCESSING",
+      "type": "API_SEQUENCE",
+      "description": "Process exam setup — member + provider linking",
+      "steps": [
+        {
+          "type": "api_call",
+          "endpoint": "ProcessExam",
+          "payload_template": {
+            "examId": "${exam_id}"
+          },
+          "description": "Process exam"
+        }
+      ]
+    },
+    {
+      "id": "DIAGNOSIS",
+      "type": "API_SEQUENCE",
+      "description": "Add ICD diagnosis codes",
+      "steps": [
+        {
+          "type": "api_call",
+          "endpoint": "AddDiagnosis",
+          "payload_template": {
+            "examId": "${exam_id}",
+            "icdCode": "${case.icd1}"
+          },
+          "description": "Add primary diagnosis"
+        }
+      ]
+    },
+    {
+      "id": "PATHWAY",
+      "type": "API_SEQUENCE",
+      "description": "Initialize clinical pathway",
+      "steps": [
+        {
+          "type": "api_call",
+          "endpoint": "GetPathwayAssetsWithValidation",
+          "payload_template": {
+            "examId": "${exam_id}",
+            "answers": []
+          },
+          "extract_to": "pathway_response",
+          "extract_path": "",
+          "description": "Get initial pathway"
+        }
+      ]
+    },
+    {
+      "id": "CLINICAL_TREE",
+      "type": "RECURSIVE_STATE_MACHINE",
+      "description": "Clinical question decision tree loop",
+      "loop_endpoint": "GetPathwayAssetsWithValidation",
+      "delete_endpoint": "DeleteAssetsByGroupId",
+      "done_endpoint": "DoneWithExam",
+      "steps": [
+        {
+          "type": "api_call",
+          "endpoint": "GetPathwayAssetsWithValidation",
+          "payload_template": {
+            "examId": "${exam_id}"
+          },
+          "description": "Get questions with accumulated answers"
+        }
+      ]
+    },
+    {
+      "id": "SUBMISSION",
+      "type": "API_SEQUENCE",
+      "description": "Submit exam and capture result",
+      "steps": [
+        {
+          "type": "api_call",
+          "endpoint": "SubmitExam",
+          "payload_template": {
+            "examId": "${exam_id}"
+          },
+          "description": "Submit exam for authorization"
+        },
+        {
+          "type": "api_call",
+          "endpoint": "GetSubmissionResult",
+          "payload_template": {
+            "examId": "${exam_id}"
+          },
+          "extract_to": "submission_result",
+          "extract_path": "",
+          "description": "Get submission result"
+        },
+        {
+          "type": "api_call",
+          "endpoint": "GetAuthNumber",
+          "payload_template": {
+            "examId": "${exam_id}"
+          },
+          "extract_to": "auth_number",
+          "extract_path": "AuthNumber",
+          "description": "Capture auth number"
+        }
+      ],
+      "output_fields": {
+        "auth_number": "auth_number",
+        "portal_case_id": "exam_id"
+      }
+    }
+  ]
+}
