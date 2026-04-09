@@ -49,4 +49,5 @@ EXPOSE 9080
 ENV BROWSER_PROFILE_DIR=/data/browser-profiles
 ENV PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
 
-CMD ["python", "restate_worker.py"]
+# Run both the worker HTTP server and Restate handler
+CMD ["bash", "start_worker.sh"]

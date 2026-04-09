@@ -73,6 +73,7 @@ services:
       dockerfile: Dockerfile.worker
     ports:
       - "9080:9080"
+      - "9082:9081"
     environment:
       DATABASE_URL: postgresql+asyncpg://ronexa:dev_password@postgres:5432/ronexa
       REDIS_URL: redis://redis:6379
