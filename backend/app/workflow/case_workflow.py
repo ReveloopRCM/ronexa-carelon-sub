@@ -202,6 +202,7 @@ async def _run_case_workflow(
 
     # ── Normal path: save questions for rep review ──
     # _save_question_batch handles bypass rules, L1/L2 routing, case state transitions
+    is_rerun = rerun_rep_answers is not None
     await ctx.run(
         "save_questions",
         _save_question_batch,
@@ -214,6 +215,7 @@ async def _run_case_workflow(
             first_pass_result.get("auto_approved"),
             first_pass_result.get("gold_card_level"),
             first_pass_result.get("algorithm_recommendation"),
+            is_rerun,
         ),
     )
 

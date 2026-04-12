@@ -23,13 +23,14 @@ async def lifespan(app: FastAPI):
         try:
             resp = await client.post(
                 f"{RESTATE_ADMIN_URL}/deployments",
-                json={"uri": RESTATE_WORKER_URL},
-                timeout=5.0,
+                json={"uri": RESTATE_WORKER_URL, "force": True},
+                timeout=10.0,
             )
             if resp.status_code in (200, 201):
-                logger.info("Restate deployment registered: %s", RESTATE_WORKER_URL)
+                svcs = [s["name"] for s in resp.json().get("services", [])]
+                logger.info("Restate deployment registered (force=true): %s → %s", RESTATE_WORKER_URL, svcs)
             else:
-                logger.warning("Restate registration returned %s", resp.status_code)
+                logger.warning("Restate registration returned %s: %s", resp.status_code, resp.text[:200])
         except Exception as e:
             logger.warning("Could not register Restate deployment: %s", e)
 

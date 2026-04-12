@@ -138,6 +138,9 @@ def is_transient_error(reason: str) -> bool:
         "browser", "target page", "closed", "timeout", "navigation",
         "network", "xserver", "chromium.launch", "protocol error",
         "connection refused", "session closed", "frame was detached",
+        # Portal page-load failures (retryable)
+        "provider search page did not load",
+        "fax modal may be blocking",
     ]
     reason_lower = reason.lower()
     return any(p in reason_lower for p in transient_patterns)

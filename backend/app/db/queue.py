@@ -141,16 +141,18 @@ async def claim_next_job(
         .where(SubmissionJob.status == JobStatus.QUEUED)
     )
 
-    # Filter by job_type + appropriate case state
+    # Filter by job_type + appropriate case state.
+    # PROCESSING is also accepted: a QUEUED job + PROCESSING case means
+    # the previous workflow attempt was abandoned (crash/restart). Safe to reclaim.
     if job_type == "SUBMIT":
         q = q.where(
             SubmissionJob.job_type == "SUBMIT",
-            Case.state == CaseState.SUBMITTING,
+            Case.state.in_((CaseState.SUBMITTING, CaseState.PROCESSING)),
         )
     elif job_type == "ORDER":
         q = q.where(
             SubmissionJob.job_type == "ORDER",
-            Case.state == CaseState.ORDER_READY,
+            Case.state.in_((CaseState.ORDER_READY, CaseState.PROCESSING)),
         )
     elif job_type == "SIGNATURE_REPLAY":
         q = q.where(
@@ -160,11 +162,11 @@ async def claim_next_job(
     elif job_type == "FIRST_PASS":
         q = q.where(
             SubmissionJob.job_type == "FIRST_PASS",
-            Case.state == CaseState.NOTES_UPLOADED,
+            Case.state.in_((CaseState.NOTES_UPLOADED, CaseState.PROCESSING)),
         )
     else:
         # Default: first pass only (backward compat)
-        q = q.where(Case.state == CaseState.NOTES_UPLOADED)
+        q = q.where(Case.state.in_((CaseState.NOTES_UPLOADED, CaseState.PROCESSING)))
 
     if stat_only:
         q = q.where(SubmissionJob.is_stat == True)

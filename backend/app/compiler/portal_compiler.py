@@ -356,9 +356,22 @@ class PortalCompiler:
 
             # Step 4: hdnAction=6 — transition from exam summary to facility search page
             # HAR shows this transition can take 25-35 seconds — use 60s timeout
-            logger.info("Transitioning: exam summary → facility search (hdnAction=6)")
-            r = await wf.postback_hdnaction(6, timeout_ms=60000)
-            if not r["ok"]:
+            # Retry once if the page doesn't render (flaky portal transition)
+            max_hdn6_attempts = 2
+            for hdn6_attempt in range(1, max_hdn6_attempts + 1):
+                logger.info(
+                    f"Transitioning: exam summary → facility search (hdnAction=6) "
+                    f"[attempt {hdn6_attempt}/{max_hdn6_attempts}]"
+                )
+                r = await wf.postback_hdnaction(6, timeout_ms=60000)
+                if r["ok"]:
+                    break
+                if hdn6_attempt < max_hdn6_attempts:
+                    logger.warning(
+                        f"hdnAction=6 attempt {hdn6_attempt} failed: {r['message']} — retrying"
+                    )
+                    await _asyncio.sleep(3)
+                    continue
                 return {"case_state": "HOLD", "hold_reason": f"Failed to transition to facility search: {r['message']}"}
 
             await _asyncio.sleep(2)
@@ -1455,6 +1468,7 @@ async def _save_question_batch(
     auto_approved: bool | None = None,
     gold_card_level: int | None = None,
     algorithm_recommendation: int | None = None,
+    is_rerun: bool = False,
 ) -> None:
     """Save all questions from a round to DB + transition case to review/submit.
 
@@ -1548,34 +1562,37 @@ async def _save_question_batch(
                 case.approval_type = "algorithm"
             # Don't set "manual" here — final determination is at submit time
 
-        if bypass_enabled and case:
-            result = await db.execute(
-                select(BypassRule).where(
-                    BypassRule.cpt_code == (case.cpt_code or ""),
-                    BypassRule.icd_code == (case.icd1 or ""),
-                    BypassRule.enabled == True,
+        # Reruns always go back to L1_REVIEW — rep changed something,
+        # new portal answers need re-validation before any auto-submit
+        if not is_rerun:
+            if bypass_enabled and case:
+                result = await db.execute(
+                    select(BypassRule).where(
+                        BypassRule.cpt_code == (case.cpt_code or ""),
+                        BypassRule.icd_code == (case.icd1 or ""),
+                        BypassRule.enabled == True,
+                    )
                 )
-            )
-            rule = result.scalar_one_or_none()
+                rule = result.scalar_one_or_none()
 
-            # Calculate average confidence
-            avg_conf = 0
-            if decisions:
-                confs = [d.get("confidence", 0) or 0 for d in decisions]
-                avg_conf = sum(confs) / len(confs) if confs else 0
+                # Calculate average confidence
+                avg_conf = 0
+                if decisions:
+                    confs = [d.get("confidence", 0) or 0 for d in decisions]
+                    avg_conf = sum(confs) / len(confs) if confs else 0
 
-            if rule and avg_conf >= rule.min_confidence:
-                if rule.bypass_l1 and rule.bypass_l2:
-                    target_state = CaseState.SUBMITTING  # Full auto-bypass
-                elif rule.bypass_l1:
-                    target_state = CaseState.L2_REVIEW   # Skip L1
-                # else: stays L1_REVIEW
+                if rule and avg_conf >= rule.min_confidence:
+                    if rule.bypass_l1 and rule.bypass_l2:
+                        target_state = CaseState.SUBMITTING  # Full auto-bypass
+                    elif rule.bypass_l1:
+                        target_state = CaseState.L2_REVIEW   # Skip L1
+                    # else: stays L1_REVIEW
 
-        # Apply settings overrides
-        if not l1_enabled and target_state == CaseState.L1_REVIEW:
-            target_state = CaseState.L2_REVIEW  # L1 disabled → go to L2
-        if not l2_enabled and target_state == CaseState.L2_REVIEW:
-            target_state = CaseState.SUBMITTING  # L2 disabled → auto-submit
+            # Apply settings overrides
+            if not l1_enabled and target_state == CaseState.L1_REVIEW:
+                target_state = CaseState.L2_REVIEW  # L1 disabled → go to L2
+            if not l2_enabled and target_state == CaseState.L2_REVIEW:
+                target_state = CaseState.SUBMITTING  # L2 disabled → auto-submit
 
         await repo.update_case_state(db, case_id, target_state)
 

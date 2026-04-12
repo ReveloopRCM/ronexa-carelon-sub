@@ -229,8 +229,9 @@ async def run_sync(
     # Just signal sleeping workers that new cases are available.
     workers_woken = 0
     stale_reaped = 0
+    processing_reaped = 0
     try:
-        from app.workflow.worker_loop import wake_sleeping_workers, reap_stale_claims
+        from app.workflow.worker_loop import wake_sleeping_workers, reap_stale_claims, reap_stale_processing
 
         if inserted_case_ids or rerun_count:
             workers_woken = await wake_sleeping_workers()
@@ -238,6 +239,8 @@ async def run_sync(
 
         # Reap CLAIMED jobs that crashed between claim and dispatch (>10 min old)
         stale_reaped = await reap_stale_claims()
+        # Reap PROCESSING cases with stale QUEUED/RUNNING jobs
+        processing_reaped = await reap_stale_processing()
     except Exception as e:
         logger.error(f"Worker wake/reap failed: {e}")
 
@@ -252,5 +255,6 @@ async def run_sync(
         "extraction_triggered": len(cases_with_blobs),
         "workers_woken": workers_woken,
         "stale_reaped": stale_reaped,
+        "processing_reaped": processing_reaped,
         "clinicals_rerun": rerun_count,
     }

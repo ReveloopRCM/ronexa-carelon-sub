@@ -106,6 +106,38 @@ class ClinicalExamFlow:
                     self.available_cpts = d.get("AvailableCptCodes", [])
 
             logger.info(f"Available CPT codes: {len(self.available_cpts)}")
+
+            # Guard: if GetCase returned no CPT codes, the fax modal may still
+            # be blocking the clinical SPA. Retry once after a brief delay.
+            if not self.available_cpts:
+                logger.warning(
+                    "GetCase returned 0 CPTs — retrying after 3s "
+                    "(fax modal may be blocking SPA initialization)"
+                )
+                import asyncio
+                await asyncio.sleep(3)
+                case_data = await self.client.get_case()
+                self.case_data = case_data
+                d = case_data.get("d", case_data)
+                if isinstance(d, dict):
+                    data = d.get("Data", d)
+                    if isinstance(data, str):
+                        try:
+                            data = json.loads(data)
+                        except Exception:
+                            data = d
+                    if isinstance(data, dict):
+                        self.available_cpts = data.get("AvailableCptCodes", [])
+                    else:
+                        self.available_cpts = d.get("AvailableCptCodes", [])
+                logger.info(f"GetCase retry: {len(self.available_cpts)} CPT codes")
+
+                if not self.available_cpts:
+                    return _fail(
+                        "Clinical SPA returned no AvailableCptCodes — "
+                        "fax modal may be blocking initialization"
+                    )
+
             for cpt in self.available_cpts[:5]:
                 logger.info(f"  CPT: {cpt}")
 

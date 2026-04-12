@@ -1195,12 +1195,34 @@ class WebFormsClient:
             except Exception as e:
                 logger.warning(f"_handle_fax_modal: JS force-click failed: {e}")
 
+        # Third fallback: dispatch click event directly
+        if not save_clicked:
+            try:
+                await self.page.dispatch_event("button#save", "click")
+                save_clicked = True
+                logger.info("_handle_fax_modal: Dispatched click event on Save button")
+            except Exception as e:
+                logger.warning(f"_handle_fax_modal: dispatch_event click failed: {e}")
+
         if save_clicked:
             # Wait for the popup to close and page to settle
             await self.reader.wait_for_postback()
+            await asyncio.sleep(0.5)
+            # Verify modal actually closed
+            try:
+                await self.page.wait_for_selector(fax_field, state="hidden", timeout=3000)
+            except Exception:
+                # Modal still visible — try Enter key as last resort
+                logger.warning("_handle_fax_modal: Modal still visible after Save — trying Enter")
+                await self.page.keyboard.press("Enter")
+                await asyncio.sleep(1)
             logger.info("_handle_fax_modal: Fax popup handled successfully")
         else:
-            logger.error("_handle_fax_modal: Could NOT click Save — clinical SPA may not initialize!")
+            # All click methods failed — try Enter key as absolute last resort
+            logger.warning("_handle_fax_modal: All Save click methods failed — trying Enter key")
+            await self.page.keyboard.press("Enter")
+            await asyncio.sleep(1)
+            logger.error("_handle_fax_modal: Could NOT click Save — tried Enter as fallback")
 
     # --- ASP.NET Async Postback Helper ---
 

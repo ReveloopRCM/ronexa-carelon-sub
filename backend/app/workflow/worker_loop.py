@@ -598,3 +598,66 @@ async def reap_stale_claims() -> int:
             logger.warning(f"Reaped {len(reaped)} stale CLAIMED jobs (>10 min)")
         await db.commit()
         return len(reaped)
+
+
+async def reap_stale_processing() -> int:
+    """Reset cases stuck in PROCESSING with QUEUED/RUNNING jobs.
+
+    Two scenarios recovered:
+    1. PROCESSING case + QUEUED job (>15 min) — workflow crashed after
+       _set_case_processing, then reap_stale_claims reset job but not case.
+    2. PROCESSING case + RUNNING job (>30 min) — workflow died mid-execution,
+       no error handler ran. Reset both job and case.
+
+    Called from sync_engine during each sync cycle.
+    """
+    from app.db.database import async_session_factory
+    from app.db.models import Case, CaseState, SubmissionJob, JobStatus
+    from sqlalchemy import select
+
+    recovered = 0
+
+    async with async_session_factory() as db:
+        # Find PROCESSING cases with stale jobs
+        result = await db.execute(
+            select(Case, SubmissionJob)
+            .join(SubmissionJob, SubmissionJob.case_id == Case.id)
+            .where(
+                Case.state == CaseState.PROCESSING,
+                Case.updated_at < datetime.utcnow() - timedelta(minutes=15),
+                SubmissionJob.status.in_((JobStatus.QUEUED, JobStatus.RUNNING)),
+            )
+        )
+        rows = result.all()
+
+        for case, job in rows:
+            # For RUNNING jobs, only reap if truly stale (>30 min)
+            if job.status == JobStatus.RUNNING:
+                stale_since = job.started_at or job.claimed_at or case.updated_at
+                if stale_since and stale_since > datetime.utcnow() - timedelta(minutes=30):
+                    continue
+                job.status = JobStatus.QUEUED
+                job.claimed_by = None
+                job.claimed_at = None
+
+            # Reset case state based on job type
+            if job.job_type == "SUBMIT":
+                case.state = CaseState.SUBMITTING
+            elif job.job_type == "ORDER":
+                case.state = CaseState.ORDER_READY
+            elif job.job_type == "SIGNATURE_REPLAY":
+                case.state = CaseState.PENDING_NOTES
+            else:
+                case.state = CaseState.NOTES_UPLOADED
+
+            case.hold_reason = None
+            recovered += 1
+            logger.warning(
+                f"Reaped stale PROCESSING case {case.id} "
+                f"(job={job.job_type}/{job.status.value}) → {case.state.value}"
+            )
+
+        if recovered:
+            await db.commit()
+
+    return recovered
