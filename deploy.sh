@@ -134,7 +134,7 @@ get_current_tags() {
   local output
   output=$(run_on_orch "
 BTAG=\$(docker inspect backend-api --format '{{.Config.Image}}' 2>/dev/null | grep -o 'v[0-9]*' || echo 'v0')
-FTAG=\$(docker inspect frontend --format '{{.Config.Image}}' 2>/dev/null | grep -o 'v[0-9]*' || docker inspect auth-ops-frontend --format '{{.Config.Image}}' 2>/dev/null | grep -o 'v[0-9]*' || echo 'v0')
+FTAG=\$(docker inspect frontend --format '{{.Config.Image}}' 2>/dev/null | grep -o 'v[0-9]*' || docker inspect ronexa-frontend --format '{{.Config.Image}}' 2>/dev/null | grep -o 'v[0-9]*' || docker inspect auth-ops-frontend --format '{{.Config.Image}}' 2>/dev/null | grep -o 'v[0-9]*' || echo 'v0')
 echo \"BACKEND=\${BTAG}\"
 echo \"FRONTEND=\${FTAG}\"
 ") || true
@@ -287,12 +287,16 @@ build_backend() {
 
 build_frontend() {
   local tag="$1"
-  log_step "Building auth-ops-frontend:${tag} ..."
+  # Build under BOTH image names for backward compat
+  # (some orchestrators have auth-ops-frontend, others have ronexa-frontend)
+  log_step "Building frontend:${tag} ..."
   docker build --platform linux/amd64 \
     -t "${ACR}/auth-ops-frontend:${tag}" \
+    -t "${ACR}/ronexa-frontend:${tag}" \
     "${PROJECT_DIR}/frontend" 2>&1 | tail -3
-  log_step "Pushing auth-ops-frontend:${tag} ..."
+  log_step "Pushing frontend:${tag} ..."
   docker push "${ACR}/auth-ops-frontend:${tag}" 2>&1 | tail -3
+  docker push "${ACR}/ronexa-frontend:${tag}" 2>&1 | tail -3
   log_ok "Frontend ${tag} pushed to ACR"
 }
 
@@ -377,7 +381,7 @@ cd ${WORKER_DIR}
 
 # Update image tags in compose file
 sed -i 's|backend-api:v[0-9]*|backend-api:${backend_tag}|g' docker-compose.yml
-sed -i 's|auth-ops-frontend:v[0-9]*|auth-ops-frontend:${frontend_tag}|g' docker-compose.yml
+sed -i 's|auth-ops-frontend:v[0-9]*|auth-ops-frontend:${frontend_tag}|g; s|ronexa-frontend:v[0-9]*|ronexa-frontend:${frontend_tag}|g' docker-compose.yml
 
 # Pull new images
 docker pull ${ACR}/backend-api:${backend_tag} 2>&1 | tail -1
@@ -724,7 +728,6 @@ if [[ "${TARGET}" =~ ^(auto|backend|all)$ ]]; then
   echo ""
 
   # Check for pending alembic migrations
-  local migration_count
   migration_count=$(find "${PROJECT_DIR}/backend/alembic/versions" -name "*.py" -newer "${DEPLOY_STATE_FILE}" 2>/dev/null | wc -l | tr -d ' ')
   if [ "${migration_count}" -gt 0 ]; then
     echo -e "${RED}⚠  ${migration_count} new migration(s) detected — run alembic upgrade head!${NC}"
