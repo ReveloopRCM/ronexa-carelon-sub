@@ -38,6 +38,7 @@ WORKFLOW_FILES=(
   "backend/app/workflow/worker_session.py"
   "backend/app/workflow/case_workflow.py"
   "backend/app/workflow/submit_workflow.py"
+  "backend/app/workflow/order_workflow.py"
   "backend/app/workflow/awaiting_clinical_workflow.py"
   "backend/app/workflow/extraction_service.py"
 )
@@ -152,6 +153,49 @@ next_tag() {
 save_deploy_state() {
   git rev-parse HEAD > "${DEPLOY_STATE_FILE}"
   log_ok "Deploy state saved ($(git rev-parse --short HEAD))"
+}
+
+# ════════════════════════════════════════════════════════════════════
+# Section 3.5: Pre-flight safety checks
+# ════════════════════════════════════════════════════════════════════
+
+preflight_checks() {
+  local has_warnings=false
+
+  # Check for uncommitted changes
+  local uncommitted
+  uncommitted=$(git status --porcelain 2>/dev/null | grep -c "^ M\|^M \|^??" || true)
+  if [ "${uncommitted}" -gt 0 ]; then
+    log_warn "UNCOMMITTED CHANGES DETECTED (${uncommitted} files)"
+    log_warn "These changes will NOT be included in the Docker images!"
+    git status --short | head -10
+    echo ""
+    has_warnings=true
+  fi
+
+  # Check for staged but uncommitted changes
+  local staged
+  staged=$(git diff --cached --name-only 2>/dev/null | wc -l | tr -d ' ')
+  if [ "${staged}" -gt 0 ]; then
+    log_warn "STAGED BUT UNCOMMITTED CHANGES (${staged} files)"
+    log_warn "Run 'git commit' before deploying!"
+    has_warnings=true
+  fi
+
+  # Check that HEAD matches what we're deploying
+  local head_msg
+  head_msg=$(git log --oneline -1 2>/dev/null || echo "unknown")
+  log_step "Deploying commit: ${head_msg}"
+
+  if [ "${has_warnings}" = true ]; then
+    echo ""
+    read -p "Continue with deploy despite warnings? (y/N) " -n 1 -r
+    echo ""
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+      log_err "Deploy aborted. Commit your changes first."
+      exit 1
+    fi
+  fi
 }
 
 # ════════════════════════════════════════════════════════════════════
@@ -525,6 +569,11 @@ echo "  Mode: ${TARGET}"
 echo "═══════════════════════════════════════"
 echo ""
 
+# Run preflight checks for any deploy mode that builds images
+if [[ "${TARGET}" =~ ^(auto|backend|frontend|all)$ ]]; then
+  preflight_checks
+fi
+
 case "${TARGET}" in
 
   # ── Auto: detect changes, deploy only what's needed ──
@@ -664,3 +713,24 @@ echo ""
 echo "═══════════════════════════════════════"
 echo "  Deploy complete"
 echo "═══════════════════════════════════════"
+echo ""
+
+# Post-deploy reminders
+if [[ "${TARGET}" =~ ^(auto|backend|all)$ ]]; then
+  echo -e "${YELLOW}Post-deploy checklist:${NC}"
+  echo "  1. Run migrations:  ssh ${SSH_USER}@${ORCH_IP} 'docker exec backend-api alembic upgrade head'"
+  echo "  2. Start WorkerLoops if they were killed (check Restate admin)"
+  echo "  3. Monitor first few cases in production logs"
+  echo ""
+
+  # Check for pending alembic migrations
+  local migration_count
+  migration_count=$(find "${PROJECT_DIR}/backend/alembic/versions" -name "*.py" -newer "${DEPLOY_STATE_FILE}" 2>/dev/null | wc -l | tr -d ' ')
+  if [ "${migration_count}" -gt 0 ]; then
+    echo -e "${RED}⚠  ${migration_count} new migration(s) detected — run alembic upgrade head!${NC}"
+    find "${PROJECT_DIR}/backend/alembic/versions" -name "*.py" -newer "${DEPLOY_STATE_FILE}" 2>/dev/null | while read f; do
+      echo "    $(basename "$f")"
+    done
+    echo ""
+  fi
+fi
