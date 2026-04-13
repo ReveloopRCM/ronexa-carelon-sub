@@ -53,6 +53,24 @@ export default function SettingsPage() {
   const [sigScanning, setSigScanning] = useState(false);
   const [sigScanResult, setSigScanResult] = useState<any>(null);
 
+  // Open prompt editor — fetches default from backend if no value in settings
+  const openPromptEditor = async (key: string) => {
+    setActivePrompt(key);
+    if (settings[key]) {
+      setPromptDraft(settings[key]);
+    } else {
+      // No value in settings — fetch default template from backend
+      try {
+        const result = await resetPrompt(key);
+        const defaultText = result.value || result.default || "";
+        setPromptDraft(defaultText);
+        setSettings((prev: any) => ({ ...prev, [key]: defaultText }));
+      } catch {
+        setPromptDraft("(Failed to load default template)");
+      }
+    }
+  };
+
   const refresh = async () => {
     try {
       const { listBypassRules, listWorkerAccounts } = await import("@/lib/api");
@@ -841,7 +859,7 @@ export default function SettingsPage() {
                   settings={settings}
                   apiKeyDrafts={apiKeyDrafts}
                   onUpdate={handleUpdate}
-                  onEditPrompt={(key) => { setActivePrompt(key); setPromptDraft(settings[key] || ""); }}
+                  onEditPrompt={openPromptEditor}
                 />
 
                 <span className="text-gray-300 self-center text-xl flex-shrink-0">&rarr;</span>
@@ -884,7 +902,7 @@ export default function SettingsPage() {
                   settings={settings}
                   apiKeyDrafts={apiKeyDrafts}
                   onUpdate={handleUpdate}
-                  onEditPrompt={(key) => { setActivePrompt(key); setPromptDraft(settings[key] || ""); }}
+                  onEditPrompt={openPromptEditor}
                 />
 
                 <span className="text-gray-300 self-center text-xl flex-shrink-0">&rarr;</span>
@@ -919,7 +937,7 @@ export default function SettingsPage() {
                   settings={settings}
                   apiKeyDrafts={apiKeyDrafts}
                   onUpdate={handleUpdate}
-                  onEditPrompt={(key) => { setActivePrompt(key); setPromptDraft(settings[key] || ""); }}
+                  onEditPrompt={openPromptEditor}
                 />
 
                 <span className="text-gray-300 self-center text-xl flex-shrink-0">&rarr;</span>
@@ -941,7 +959,7 @@ export default function SettingsPage() {
           </div>
 
           {/* Prompt Editor — hidden until a prompt button is clicked */}
-          {activePrompt && promptDraft !== "" && (
+          {activePrompt && (
             <div className="border rounded-lg p-5 space-y-4">
               <div className="flex items-center justify-between">
                 <div>
