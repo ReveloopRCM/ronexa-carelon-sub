@@ -71,16 +71,9 @@ async def start(ctx: ObjectContext, config: dict) -> dict:
 
             # 2. Claim next case from queue — 4-level priority cascade:
             #    SUBMIT → FIRST_PASS → ORDER → SIGNATURE_REPLAY
-            #    Each worker tries all levels before sleeping.
+            #    Every worker tries ALL job types in priority order.
             event = None
             for jt in ("SUBMIT", "FIRST_PASS", "ORDER", "SIGNATURE_REPLAY"):
-                # Skip job types that don't match the worker's primary role
-                # (submit workers only check SUBMIT, processing workers skip SUBMIT)
-                if job_type == "SUBMIT" and jt != "SUBMIT":
-                    continue
-                if job_type != "SUBMIT" and jt == "SUBMIT":
-                    continue
-
                 event = await ctx.run(
                     f"claim_{jt}_{iteration}",
                     _claim_and_build_event,
