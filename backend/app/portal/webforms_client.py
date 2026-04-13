@@ -1107,6 +1107,63 @@ class WebFormsClient:
         logger.info(f"No address match found for '{match_address}' — defaulting to first")
         return 0
 
+    def _score_facility_match(
+        self,
+        facility: dict,
+        match_address: str,
+        facility_name: str,
+        zip_code: str,
+    ) -> int:
+        """Score a facility result for selection confidence. Higher = better match.
+
+        Scoring:
+          +100  address substring match (strongest — exact location)
+          +80   street number + name token match
+          +90   zip code found in result text (disambiguates multi-location)
+          +60   2+ name keywords match facility name
+          +30   1 name keyword match
+          +40   city name found in match_address
+        """
+        score = 0
+        addr = (facility.get("address") or "").lower()
+        name = (facility.get("name") or "").lower()
+        full_text = (facility.get("_full_text") or "").lower()
+
+        # Address substring match (strongest signal)
+        if match_address:
+            match_lower = match_address.lower().strip()
+            if match_lower in addr or addr in match_lower:
+                score += 100
+            else:
+                # Street number + name tokens (e.g. "6957 plano" in "6957 W PLANO PKWY")
+                parts = match_lower.replace(",", " ").replace("-", " ").split()
+                if len(parts) >= 2:
+                    street_key = " ".join(parts[:2])
+                    if street_key in addr:
+                        score += 80
+
+        # Zip code in full result text (strong — disambiguates locations)
+        if zip_code and zip_code in full_text:
+            score += 90
+
+        # Facility name keywords (medium — catches "Envision" + "Plano" in result name)
+        if facility_name:
+            name_lower = facility_name.lower()
+            key_words = [w for w in name_lower.split() if len(w) > 3]
+            matches = sum(1 for w in key_words if w in name)
+            if matches >= 2:
+                score += 60
+            elif matches >= 1:
+                score += 30
+
+        # City match
+        city = (facility.get("city") or "").lower()
+        if match_address and city:
+            if city in match_address.lower():
+                score += 40
+
+        return score
+
     async def _handle_fax_modal(self, fax: str = "") -> None:
         """Handle the 'Ordering Provider Fax Number' popup after provider selection.
 
@@ -1492,22 +1549,47 @@ class WebFormsClient:
                 data={"npi": center_npi, "state": state},
             )
 
-        # Select best match: address → default first
+        # Select best match using multi-criteria scoring
         selected_index = 0
         match_method = "single_result" if len(facilities) == 1 else "default_first"
 
-        if len(facilities) > 1 and match_address:
-            idx = self._match_provider_by_address(facilities, match_address)
-            # Verify it actually matched (not just default 0)
-            addr_lower = match_address.lower().strip()
-            candidate_addr = (facilities[idx].get("address") or "").lower()
-            if addr_lower in candidate_addr or candidate_addr in addr_lower or idx > 0:
-                selected_index = idx
-                match_method = "address"
-                logger.info(f"Facility address match at index {idx}: {facilities[idx].get('address')}")
+        if len(facilities) > 1:
+            scores = [
+                self._score_facility_match(f, match_address, facility_name, zip_code)
+                for f in facilities
+            ]
+            best_idx = max(range(len(scores)), key=lambda i: scores[i])
+            best_score = scores[best_idx]
 
-        if match_method == "default_first":
-            logger.info("No address match — selecting first facility")
+            logger.info(
+                f"Facility scoring ({len(facilities)} results): "
+                + ", ".join(f"[{i}]={s}" for i, s in enumerate(scores))
+                + f" → best=[{best_idx}] score={best_score}"
+            )
+
+            if best_score >= 30:
+                selected_index = best_idx
+                match_method = f"scored_{best_score}"
+                logger.info(
+                    f"Facility selected by scoring: [{best_idx}] "
+                    f"{facilities[best_idx].get('name')} at {facilities[best_idx].get('address')}"
+                )
+            else:
+                # No confident match — HOLD. Wrong facility is worse than no submission.
+                return _fail(
+                    f"Facility NPI {center_npi}: {len(facilities)} results but no confident match "
+                    f"(best score={best_score}). Expected: '{facility_name}' at '{match_address}'",
+                    data={
+                        "facilities": [
+                            {"name": f.get("name"), "address": f.get("address"), "city": f.get("city")}
+                            for f in facilities
+                        ],
+                        "expected_address": match_address,
+                        "expected_name": facility_name,
+                    },
+                )
+        elif len(facilities) == 1:
+            logger.info(f"Single facility result: {facilities[0].get('name')}")
 
         # Click the selected facility's Select button
         try:

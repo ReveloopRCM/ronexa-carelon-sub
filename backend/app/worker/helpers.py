@@ -493,6 +493,19 @@ async def save_flow_checks(case_id: str, result: dict) -> None:
             "fax_entered": pm.get("fax_entered"),
         }))
 
+    # Facility match — from facility_search phase
+    if result.get("facility_match"):
+        fm = result["facility_match"]
+        checks.append(("flow_check:facility_match", {
+            "matched": True,
+            "method": fm.get("match_method"),
+            "facility_name": fm.get("name"),
+            "facility_address": fm.get("address"),
+            "results_count": fm.get("results_count"),
+            "selected_index": fm.get("selected_index"),
+            "center_address": fm.get("center_address"),
+        }))
+
     # Contrast selection
     if result.get("contrast"):
         contrast = result["contrast"]

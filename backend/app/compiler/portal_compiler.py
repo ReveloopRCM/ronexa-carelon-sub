@@ -639,7 +639,7 @@ class PortalCompiler:
             center_name = raw.get("CenterDesc", "")        # e.g. "Envision Imaging Flower Mound"
             center_address = raw.get("CenterAddress", "")   # e.g. "4640 Long Prairie Rd - Ste 310"
             fax = raw.get("ReferringProviderFax", "") or case.get("referring_fax", "")
-            zip_code = raw.get("CenterZip", "")
+            zip_code = raw.get("CenterZipCode", "")
 
             # State: full name → 2-letter abbreviation
             center_state_raw = (raw.get("CenterState") or "").strip().upper()
