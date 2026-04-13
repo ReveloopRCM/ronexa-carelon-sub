@@ -115,6 +115,27 @@ async def list_queue(
         )
         result = await db.execute(q)
         cases = result.scalars().unique().all()
+    elif source == "clinical":
+        # Clinical cases only — exclude order-only
+        q = (
+            select(Case)
+            .outerjoin(SubmissionJob, SubmissionJob.case_id == Case.id)
+            .where(
+                Case.state.in_(states),
+                or_(
+                    SubmissionJob.job_type.is_(None),
+                    SubmissionJob.job_type != "ORDER",
+                ),
+                or_(
+                    Case.raw_data["order_only_first_pass"].as_boolean() != True,
+                    ~Case.raw_data.has_key("order_only_first_pass"),
+                ),
+            )
+            .order_by(Case.sort_priority, Case.ingested_at)
+            .limit(limit)
+        )
+        result = await db.execute(q)
+        cases = result.scalars().unique().all()
     else:
         cases = await repo.list_review_queue(db, limit=limit, states=states)
 

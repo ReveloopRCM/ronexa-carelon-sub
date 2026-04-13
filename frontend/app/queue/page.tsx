@@ -24,8 +24,8 @@ export default function QueuePage() {
     try {
       // Fetch all tabs in parallel for counts
       const [l1, l2, all] = await Promise.all([
-        listQueue(50, 1),
-        listQueue(50, 2),
+        listQueue(50, 1, "clinical"),
+        listQueue(50, 2, "clinical"),
         listQueue(50),  // all states — includes PENDED_FAX_REVIEW
       ]);
       setL1Count(l1.length);
