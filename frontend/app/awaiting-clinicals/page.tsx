@@ -175,16 +175,27 @@ export default function AwaitingClinicalsPage() {
                       Order Only
                     </span>
                   )}
-                  {c.auto_approved === true && (
-                    <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
-                      c.approval_type === "gold_card"
-                        ? "bg-yellow-100 text-yellow-700"
-                        : "bg-green-100 text-green-700"
-                    }`}>
-                      {c.approval_type === "gold_card" ? "Gold Card" : c.approval_type === "auto_approved" ? "Auto Approved" : "Algorithm Approved"}
+                  {c.approval_type === "no_auth" && (
+                    <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-sky-100 text-sky-700">
+                      No Auth Required
                     </span>
                   )}
-                  {c.auto_approved === false && tab !== "clinical_review" && (
+                  {c.approval_type === "gold_card" && (
+                    <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-yellow-100 text-yellow-700">
+                      Gold Card
+                    </span>
+                  )}
+                  {c.approval_type === "auto_approved" && (
+                    <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-green-100 text-green-700">
+                      Auto Approved
+                    </span>
+                  )}
+                  {c.auto_approved === true && c.approval_type === "algorithm" && (
+                    <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-green-100 text-green-700">
+                      Algorithm Approved
+                    </span>
+                  )}
+                  {c.auto_approved === false && !c.approval_type && tab !== "clinical_review" && (
                     <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-amber-100 text-amber-700">
                       Pend
                     </span>

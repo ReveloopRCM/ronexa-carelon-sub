@@ -270,6 +270,7 @@ async def mark_case_no_auth_review(case_id: str, reason: str, screenshot_key: st
         if case:
             case.state = CaseState.L1_REVIEW
             case.hold_reason = reason
+            case.approval_type = "no_auth"
             if screenshot_key:
                 case.auth_pdf_url = screenshot_key
 
