@@ -160,6 +160,7 @@ async def decide_answer(
     pathway_name: str = "",
     previous_answers: list[dict] | None = None,
     order_mode: bool = False,
+    signature_answers: list[dict] | None = None,
 ) -> TypedDecision:
     """Evaluate a portal question using LLM and return a TypedDecision.
 
@@ -192,6 +193,7 @@ async def decide_answer(
         pathway_name=pathway_name,
         previous_answers=previous_answers,
         order_mode=order_mode,
+        signature_answers=signature_answers,
     )
 
     # System prompt also from DB

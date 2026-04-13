@@ -1090,6 +1090,27 @@ class PortalCompiler:
                 f"(up to GroupId={changed_group_id})"
             )
 
+        # ── Load algorithm signature for this CPT+ICD (if exists) ──
+        # Provides proven Q&A answers as strong LLM guidance. Both clinical
+        # and order-only pipelines benefit. Empty table = no-op.
+        signature_answers = None
+        try:
+            from app.db.database import async_session_factory as sig_session_factory
+            from app.db.outcome_db import get_signature_for_case
+            async with sig_session_factory() as sig_db:
+                sig = await get_signature_for_case(
+                    sig_db, case.get("cpt_code"), case.get("icd1"),
+                )
+                if sig:
+                    signature_answers = sig.qa_sequence
+                    logger.info(
+                        f"Loaded algorithm signature {sig.id[:8]} for "
+                        f"{case.get('cpt_code')}/{case.get('icd1')} "
+                        f"({len(sig.qa_sequence)} Q&As, pathway={sig.pathway_id})"
+                    )
+        except Exception as sig_err:
+            logger.debug(f"Signature lookup failed (non-fatal): {sig_err}")
+
         # ---- LLM answers questions (first pass or backtrack new questions) ----
         review_round = 0
         all_decisions: list[tuple] = []
@@ -1292,6 +1313,7 @@ class PortalCompiler:
                         pathway_name=pw_name,
                         previous_answers=prev_answers_ctx if prev_answers_ctx else None,
                         order_mode=context_vars.get("order_mode", False),
+                        signature_answers=signature_answers,
                     )
 
                     all_decisions.append((observation, decision))

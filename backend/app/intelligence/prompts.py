@@ -53,6 +53,7 @@ async def build_evaluation_prompt(
     pathway_name: str = "",
     previous_answers: list[dict] | None = None,
     order_mode: bool = False,
+    signature_answers: list[dict] | None = None,
 ) -> str:
     """Build the evaluation prompt using the Jinja2 template from DB.
 
@@ -165,6 +166,53 @@ async def build_evaluation_prompt(
                     "--- END RE-RUN CONTEXT ---\n"
                 )
 
+    # Build ALGORITHM SIGNATURE section — proven answers from past approved cases
+    signature_section = ""
+    if signature_answers:
+        current_question_id = observation.get("question_id") or ""
+        current_question_text = (observation.get("question_text") or "").strip().lower()
+        current_group_id = observation.get("group_id")
+
+        # Match signature Q&A to current question by question_id or question_text
+        sig_match = None
+        for sa in signature_answers:
+            sa_qid = sa.get("question_id", "")
+            if sa_qid and sa_qid == current_question_id:
+                sig_match = sa
+                break
+        if not sig_match:
+            # Fallback: match by group_id
+            for sa in signature_answers:
+                sa_group = sa.get("group_id") or sa.get("GroupId")
+                if sa_group is not None and current_group_id is not None:
+                    if int(sa_group) == int(current_group_id):
+                        sig_match = sa
+                        break
+        if not sig_match:
+            # Last resort: match by question text similarity
+            for sa in signature_answers:
+                sa_text = (sa.get("question_text") or "").strip().lower()
+                if sa_text and sa_text == current_question_text:
+                    sig_match = sa
+                    break
+
+        if sig_match:
+            sig_value = sig_match.get("answer_value") or sig_match.get("Values", "")
+            sig_text = sig_match.get("answer_text") or ""
+            signature_section = (
+                "\n--- ALGORITHM SIGNATURE (Previously Approved for this CPT+ICD) ---\n"
+                "This exact CPT+ICD combination was previously approved by the portal algorithm.\n"
+                f"The approved answer for this question was: {json.dumps(sig_value, default=str)}\n"
+            )
+            if sig_text:
+                signature_section += f"Answer text: {sig_text}\n"
+            signature_section += (
+                "\nThis is a STRONG signal — the portal accepted this answer before for the same "
+                "procedure and diagnosis. Use this as your primary guidance when selecting an answer. "
+                "Only deviate if the clinical documentation explicitly contradicts this answer.\n"
+                "--- END ALGORITHM SIGNATURE ---\n"
+            )
+
     # Render Jinja2 template — order mode uses separate template
     template_key = "prompt_eval_order_user" if order_mode else "prompt_eval_user"
     return await render_prompt(template_key, {
@@ -183,4 +231,5 @@ async def build_evaluation_prompt(
         "rag_section": rag_section,
         "clinical_section": clinical_section,
         "rerun_section": rerun_section,
+        "signature_section": signature_section,
     })

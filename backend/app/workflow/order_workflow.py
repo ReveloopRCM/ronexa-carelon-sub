@@ -142,8 +142,22 @@ async def _run_order_workflow(
         )
 
     # ── Non-review outcomes → return immediately ──
-    # NO_AUTH and GOLD_CARD are detected here — the whole reason we run order cases
-    if first_pass_result["status"] in ("hold", "error", "auto_approved"):
+    # NO_AUTH, GOLD_CARD, and auto-approved are detected during the same portal run.
+    # http_server already handled state transitions for these:
+    #   - "no_auth_review" → mark_case_no_auth_review() → IN_REVIEW
+    #   - "hold" → mark_case_hold() → HOLD
+    #   - "auto_approved" → zero-question pathway, needs state transition here
+    status = first_pass_result.get("status", "")
+
+    if status == "auto_approved":
+        # Zero-question auto-approved pathway — http_server didn't set state
+        await ctx.run(
+            "mark_auto_approved", _mark_auto_approved,
+            max_attempts=3, args=(case_id, first_pass_result),
+        )
+        return first_pass_result
+
+    if status in ("hold", "error", "no_auth_review"):
         return first_pass_result
 
     # ── Save questions with order-specific routing ──
@@ -220,6 +234,53 @@ async def _complete_job(case_id: str) -> None:
             .values(status=JobStatus.COMPLETED, completed_at=func.now())
         )
         await db.commit()
+
+
+async def _mark_auto_approved(case_id: str, first_pass_result: dict) -> None:
+    """Handle zero-question auto-approved pathway.
+
+    Portal auto-approved the case during the pipeline but returned 0 questions.
+    http_server returned status='auto_approved' without setting case state.
+    We mark the case as IN_REVIEW so a rep can confirm before submission.
+    """
+    from app.db.database import async_session_factory
+    from app.db import repositories as repo
+    from app.db.models import CaseState, SubmissionJob, JobStatus
+    from sqlalchemy import update
+    from sqlalchemy.sql import func
+
+    async with async_session_factory() as db:
+        case = await repo.get_case(db, case_id)
+        if case:
+            case.state = CaseState.IN_REVIEW
+            case.auto_approved = True
+            result_data = first_pass_result.get("result", {})
+            case.gold_card_level = result_data.get("gold_card_level")
+            case.algorithm_recommendation = result_data.get("algorithm_recommendation")
+            if (case.gold_card_level or 0) >= 2:
+                case.approval_type = "gold_card"
+            else:
+                case.approval_type = "algorithm"
+
+        await db.execute(
+            update(SubmissionJob)
+            .where(SubmissionJob.case_id == case_id)
+            .values(status=JobStatus.COMPLETED, completed_at=func.now())
+        )
+
+        await repo.create_audit_event(
+            db, case_id=case_id, actor="system",
+            action="state_change:IN_REVIEW",
+            data={
+                "state": "IN_REVIEW",
+                "reason": "Zero-question auto-approved pathway",
+                "workflow": "OrderWorkflow",
+                "auto_approved": True,
+            },
+        )
+        await db.commit()
+
+    logger.info(f"OrderWorkflow/{case_id}: zero-question auto-approved → IN_REVIEW")
 
 
 async def _mark_case_hold(case_id: str, reason: str) -> None:

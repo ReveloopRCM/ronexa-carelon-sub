@@ -296,6 +296,8 @@ Q{{ qa.question_number }}: "{{ qa.question_text }}"
 {{ rag_section }}
 </rag_examples>
 
+{{ signature_section }}
+
 {{ rerun_section }}
 
 # STRATEGIC NAVIGATION STEPS
@@ -465,6 +467,8 @@ Q{{ qa.question_number }}: "{{ qa.question_text }}"
 <rag_examples>
 {{ rag_section }}
 </rag_examples>
+
+{{ signature_section }}
 
 {{ rerun_section }}
 

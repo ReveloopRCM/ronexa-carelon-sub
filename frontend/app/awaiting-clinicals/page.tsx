@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { listQueue } from "@/lib/api";
 
-type TabLevel = "l1" | "l2" | "awaiting";
+type TabLevel = "l1" | "l2" | "awaiting" | "clinical_review";
 
 export default function AwaitingClinicalsPage() {
   const [tab, setTab] = useState<TabLevel>("l1");
@@ -12,6 +12,7 @@ export default function AwaitingClinicalsPage() {
   const [l1Count, setL1Count] = useState(0);
   const [l2Count, setL2Count] = useState(0);
   const [awaitingCount, setAwaitingCount] = useState(0);
+  const [clinicalReviewCount, setClinicalReviewCount] = useState(0);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -23,19 +24,22 @@ export default function AwaitingClinicalsPage() {
   async function loadQueue() {
     try {
       // Fetch all tabs in parallel for counts
-      const [l1, l2, awaiting] = await Promise.all([
+      const [l1, l2, awaiting, clinicalReview] = await Promise.all([
         listQueue(50, 1, "order"),
         listQueue(50, 2, "order"),
         listQueue(50, "awaiting_clinicals"),
+        listQueue(50, "clinical"),
       ]);
       setL1Count(l1.length);
       setL2Count(l2.length);
       setAwaitingCount(awaiting.length);
+      setClinicalReviewCount(clinicalReview.length);
 
       // Set current tab's queue
       if (tab === "l1") setQueue(l1);
       else if (tab === "l2") setQueue(l2);
-      else setQueue(awaiting);
+      else if (tab === "awaiting") setQueue(awaiting);
+      else setQueue(clinicalReview);
     } catch (err) {
       console.error(err);
     } finally {
@@ -50,6 +54,8 @@ export default function AwaitingClinicalsPage() {
       ? "Order-only cases in first review. Verify AI answers against the physician order form, then send to L2."
       : tab === "l2"
       ? "Order-only cases in final review. Confirm answers and submit to Carelon portal."
+      : tab === "clinical_review"
+      ? "Signature-replayed cases where portal algorithm approved or Gold Card detected. Verify with clinicals and confirm or reject."
       : "Low-confidence order cases parked for clinical notes. Upload clinicals to re-run with full context.";
 
   const emptyMessage =
@@ -57,6 +63,8 @@ export default function AwaitingClinicalsPage() {
       ? "No order cases in L1 review."
       : tab === "l2"
       ? "No order cases in L2 review."
+      : tab === "clinical_review"
+      ? "No cases in clinical review."
       : "No cases awaiting clinical upload.";
 
   return (
@@ -113,6 +121,21 @@ export default function AwaitingClinicalsPage() {
             </span>
           )}
         </button>
+        <button
+          onClick={() => setTab("clinical_review")}
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition ${
+            tab === "clinical_review"
+              ? "border-violet-600 text-violet-600"
+              : "border-transparent text-gray-500 hover:text-gray-700"
+          }`}
+        >
+          Clinical Review
+          {clinicalReviewCount > 0 && (
+            <span className="ml-2 bg-violet-100 text-violet-700 text-xs px-2 py-0.5 rounded-full">
+              {clinicalReviewCount}
+            </span>
+          )}
+        </button>
       </div>
 
       {/* Tab description */}
@@ -128,6 +151,8 @@ export default function AwaitingClinicalsPage() {
               href={
                 tab === "awaiting"
                   ? `/cases/${c.id}`
+                  : tab === "clinical_review"
+                  ? `/queue/${c.id}`
                   : `/queue/${c.id}?level=${tab === "l1" ? 1 : 2}`
               }
               className="block border rounded p-4 hover:border-teal-500 transition"
@@ -145,9 +170,11 @@ export default function AwaitingClinicalsPage() {
                       STAT
                     </span>
                   )}
-                  <span className="ml-2 bg-teal-100 text-teal-700 text-xs px-2 py-0.5 rounded">
-                    Order Only
-                  </span>
+                  {tab !== "clinical_review" && (
+                    <span className="ml-2 bg-teal-100 text-teal-700 text-xs px-2 py-0.5 rounded">
+                      Order Only
+                    </span>
+                  )}
                   {c.auto_approved === true && (
                     <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
                       c.approval_type === "gold_card"
@@ -157,7 +184,7 @@ export default function AwaitingClinicalsPage() {
                       {c.approval_type === "gold_card" ? "Gold Card" : "Algorithm Approved"}
                     </span>
                   )}
-                  {c.auto_approved === false && (
+                  {c.auto_approved === false && tab !== "clinical_review" && (
                     <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-amber-100 text-amber-700">
                       Pend
                     </span>
@@ -170,6 +197,11 @@ export default function AwaitingClinicalsPage() {
                   {tab === "awaiting" && (
                     <span className="ml-2 bg-amber-100 text-amber-700 text-xs px-2 py-0.5 rounded">
                       Needs Clinicals
+                    </span>
+                  )}
+                  {tab === "clinical_review" && (
+                    <span className="ml-2 bg-violet-100 text-violet-700 text-xs px-2 py-0.5 rounded">
+                      Signature Replay
                     </span>
                   )}
                   {c.rerun_count > 0 && (
