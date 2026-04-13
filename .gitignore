@@ -37,3 +37,7 @@ pgdata/
 
 # Deploy state
 .last-deploy
+
+# Local test files
+backend/test_workflows.py
+backend/tests/fixtures/
