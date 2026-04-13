@@ -268,7 +268,7 @@ async def mark_case_no_auth_review(case_id: str, reason: str, screenshot_key: st
     async with async_session_factory() as db:
         case = await repo.get_case(db, case_id)
         if case:
-            case.state = CaseState.IN_REVIEW
+            case.state = CaseState.L1_REVIEW
             case.hold_reason = reason
             if screenshot_key:
                 case.auth_pdf_url = screenshot_key

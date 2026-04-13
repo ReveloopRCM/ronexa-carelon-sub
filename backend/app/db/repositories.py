@@ -199,7 +199,7 @@ async def list_review_queue(
     states: list[CaseState] | None = None,
 ) -> Sequence[Case]:
     if states is None:
-        states = [CaseState.IN_REVIEW, CaseState.L1_REVIEW, CaseState.L2_REVIEW]
+        states = [CaseState.L1_REVIEW, CaseState.L2_REVIEW]
     result = await db.execute(
         select(Case)
         .where(Case.state.in_(states))

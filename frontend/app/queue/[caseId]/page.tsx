@@ -292,7 +292,7 @@ export default function ReviewPage() {
   const isClinicalReview = caseInfo.state === "CLINICAL_REVIEW";
   // Both L1 and L2 see all questions — same view, two pairs of eyes
   const pendingQuestions = questions || [];
-  const isNoAuthReview = (caseInfo.state === "IN_REVIEW" || caseInfo.state === "L1_REVIEW")
+  const isNoAuthReview = caseInfo.state === "L1_REVIEW"
     && pendingQuestions.length === 0
     && (caseInfo.hold_reason?.includes("does not require") || caseInfo.hold_reason?.includes("No auth required"));
 

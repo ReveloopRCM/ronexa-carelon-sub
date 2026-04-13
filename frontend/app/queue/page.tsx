@@ -150,7 +150,7 @@ export default function QueuePage() {
                         ? "bg-yellow-100 text-yellow-700"
                         : "bg-green-100 text-green-700"
                     }`}>
-                      {c.approval_type === "gold_card" ? "Gold Card" : "Algorithm Approved"}
+                      {c.approval_type === "gold_card" ? "Gold Card" : c.approval_type === "auto_approved" ? "Auto Approved" : "Algorithm Approved"}
                     </span>
                   )}
                   {c.auto_approved === false && (

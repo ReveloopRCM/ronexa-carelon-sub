@@ -91,7 +91,6 @@ async def list_queue(
         states = [CaseState.WAITING_CLINICALS]
     else:
         states = [
-            CaseState.IN_REVIEW,
             CaseState.L1_REVIEW,
             CaseState.L2_REVIEW,
             CaseState.PENDED_FAX_REVIEW,
@@ -281,7 +280,7 @@ async def resolve_l2(
     case = await repo.get_case(db, case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
-    if case.state not in (CaseState.L2_REVIEW, CaseState.IN_REVIEW):
+    if case.state not in (CaseState.L2_REVIEW, CaseState.L1_REVIEW):
         raise HTTPException(status_code=400, detail=f"Case not in L2 review (state={case.state.value})")
 
     all_questions = await repo.get_questions_for_case(db, case_id)
@@ -323,7 +322,7 @@ async def rerun_l2(
     case = await repo.get_case(db, case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
-    if case.state not in (CaseState.L2_REVIEW, CaseState.IN_REVIEW):
+    if case.state not in (CaseState.L2_REVIEW, CaseState.L1_REVIEW):
         raise HTTPException(status_code=400, detail=f"Case not in L2 review (state={case.state.value})")
 
     all_questions = await repo.get_questions_for_case(db, case_id)
@@ -409,7 +408,7 @@ async def update_pathway(
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
 
-    if case.state not in (CaseState.L1_REVIEW, CaseState.L2_REVIEW, CaseState.IN_REVIEW):
+    if case.state not in (CaseState.L1_REVIEW, CaseState.L2_REVIEW, CaseState.L1_REVIEW):
         raise HTTPException(
             status_code=400,
             detail=f"Case not in review (state={case.state.value})",
@@ -535,7 +534,7 @@ async def _resolve_l1(
     case = await repo.get_case(db, case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
-    if case.state not in (CaseState.L1_REVIEW, CaseState.IN_REVIEW):
+    if case.state != CaseState.L1_REVIEW:
         raise HTTPException(status_code=400, detail=f"Case not in L1 review (state={case.state.value})")
 
     all_questions = await repo.get_questions_for_case(db, case_id)
@@ -1014,14 +1013,14 @@ async def confirm_no_auth(
 ):
     """Rep confirms portal's 'no auth required' determination.
 
-    Transitions case from IN_REVIEW → NO_AUTH_REQUIRED (terminal).
+    Transitions case from L1_REVIEW → NO_AUTH_REQUIRED (terminal).
     """
     case = await repo.get_case(db, case_id)
     if not case:
         raise HTTPException(404, "Case not found")
-    if case.state not in (CaseState.IN_REVIEW, CaseState.L1_REVIEW):
+    if case.state not in (CaseState.L1_REVIEW):
         raise HTTPException(
-            400, f"Case is in {case.state}, expected IN_REVIEW or L1_REVIEW"
+            400, f"Case is in {case.state}, expected L1_REVIEW"
         )
 
     case.state = CaseState.NO_AUTH_REQUIRED
@@ -1061,14 +1060,14 @@ async def reject_no_auth(
 ):
     """Rep rejects portal's 'no auth required' — case needs reprocessing.
 
-    Transitions case from IN_REVIEW → QUEUED for a fresh attempt.
+    Transitions case from L1_REVIEW → QUEUED for a fresh attempt.
     """
     case = await repo.get_case(db, case_id)
     if not case:
         raise HTTPException(404, "Case not found")
-    if case.state not in (CaseState.IN_REVIEW, CaseState.L1_REVIEW):
+    if case.state not in (CaseState.L1_REVIEW):
         raise HTTPException(
-            400, f"Case is in {case.state}, expected IN_REVIEW or L1_REVIEW"
+            400, f"Case is in {case.state}, expected L1_REVIEW"
         )
 
     case.state = CaseState.NOTES_UPLOADED if case.clinical_blob_key else CaseState.QUEUED
@@ -1108,7 +1107,6 @@ async def reject_no_auth(
 REVIEW_STATES = {
     CaseState.L1_REVIEW,
     CaseState.L2_REVIEW,
-    CaseState.IN_REVIEW,
     CaseState.CLINICAL_REVIEW,
 }
 

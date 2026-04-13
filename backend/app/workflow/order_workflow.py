@@ -252,7 +252,7 @@ async def _mark_auto_approved(case_id: str, first_pass_result: dict) -> None:
     async with async_session_factory() as db:
         case = await repo.get_case(db, case_id)
         if case:
-            case.state = CaseState.IN_REVIEW
+            case.state = CaseState.L1_REVIEW
             case.auto_approved = True
             result_data = first_pass_result.get("result", {})
             case.gold_card_level = result_data.get("gold_card_level")
@@ -260,7 +260,7 @@ async def _mark_auto_approved(case_id: str, first_pass_result: dict) -> None:
             if (case.gold_card_level or 0) >= 2:
                 case.approval_type = "gold_card"
             else:
-                case.approval_type = "algorithm"
+                case.approval_type = "auto_approved"
 
         await db.execute(
             update(SubmissionJob)
