@@ -904,72 +904,36 @@ export default function SettingsPage() {
               </div>
             </div>
 
-            {/* Row 3: Awaiting Clinicals Pipeline */}
+            {/* Row 3: Order-Only Pipeline */}
             <div>
-              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Awaiting Clinicals</p>
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Order Evaluation</p>
               <div className="flex items-start gap-2">
-                {/* Node 1: Signature DB (stats) */}
+                {/* Order LLM Node */}
+                <WorkflowNode
+                  title="Order LLM"
+                  subtitle="Answers Carelon questions from physician order form + signatures"
+                  providerKey="llm_eval_provider"
+                  modelKey="llm_eval_model"
+                  role="eval"
+                  promptKeys={["prompt_eval_order_system", "prompt_eval_order_user"]}
+                  settings={settings}
+                  apiKeyDrafts={apiKeyDrafts}
+                  onUpdate={handleUpdate}
+                  onEditPrompt={(key) => { setActivePrompt(key); setPromptDraft(settings[key] || ""); }}
+                />
+
+                <span className="text-gray-300 self-center text-xl flex-shrink-0">&rarr;</span>
+
+                {/* Signature DB stats (info only) */}
                 <div className="border-2 border-emerald-200 rounded-lg p-4 flex-1 min-w-[170px] bg-emerald-50/30">
                   <div className="flex items-center gap-2 mb-1">
                     <span className={`w-2 h-2 rounded-full ${sigStats?.total_signatures ? "bg-green-500" : "bg-gray-300"}`} />
                     <h3 className="text-sm font-semibold">Signature DB</h3>
                   </div>
-                  <p className="text-xs text-gray-400 mb-3">Algorithm Q&A patterns from approved cases</p>
+                  <p className="text-xs text-gray-400 mb-3">Proven Q&A patterns injected as LLM context</p>
                   <div className="space-y-1 text-xs text-gray-500">
                     <p>Signatures: <span className="font-mono">{sigStats?.total_signatures ?? "..."}</span></p>
                     <p>CPT+ICD combos: <span className="font-mono">{sigStats?.unique_cpt_icd_combos ?? "..."}</span></p>
-                    <p>
-                      Coverage:{" "}
-                      <span className="font-mono">
-                        {sigStats
-                          ? `${sigStats.pending_notes_with_signature}/${sigStats.pending_notes_total} (${Math.round(sigStats.coverage_pct)}%)`
-                          : "..."}
-                      </span>
-                    </p>
-                  </div>
-                </div>
-
-                <span className="text-gray-300 self-center text-xl flex-shrink-0">&rarr;</span>
-
-                {/* Node 2: Portal Replay (scan trigger) */}
-                <div className="border-2 border-amber-200 rounded-lg p-4 flex-1 min-w-[170px] bg-amber-50/30">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="w-2 h-2 rounded-full bg-amber-500" />
-                    <h3 className="text-sm font-semibold">Portal Replay</h3>
-                  </div>
-                  <p className="text-xs text-gray-400 mb-3">Replays signatures on PENDING_NOTES cases</p>
-                  <button
-                    onClick={handleSigScan}
-                    disabled={sigScanning}
-                    className="w-full px-3 py-1.5 text-xs font-medium rounded bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {sigScanning ? "Scanning..." : "Scan & Replay"}
-                  </button>
-                  {sigScanResult && (
-                    <p className="text-xs text-gray-500 mt-2">
-                      Jobs created: <span className="font-mono text-amber-700">{sigScanResult.jobs_created}</span>
-                      {" / "}{sigScanResult.candidates_scanned} scanned
-                    </p>
-                  )}
-                </div>
-
-                <span className="text-gray-300 self-center text-xl flex-shrink-0">&rarr;</span>
-
-                {/* Node 3: Clinical Review Queue */}
-                <div className="border-2 border-violet-200 rounded-lg p-4 flex-1 min-w-[170px] bg-violet-50/30">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className={`w-2 h-2 rounded-full ${sigStats?.in_clinical_review ? "bg-violet-500" : "bg-gray-300"}`} />
-                    <h3 className="text-sm font-semibold">Clinical Review</h3>
-                  </div>
-                  <p className="text-xs text-gray-400 mb-3">Rep verifies signature answers match clinicals</p>
-                  <div className="space-y-1 text-xs text-gray-500">
-                    <p>
-                      In review:{" "}
-                      <span className="font-mono font-semibold">
-                        {sigStats?.in_clinical_review ?? "..."}
-                      </span>
-                      {" "}cases
-                    </p>
                   </div>
                 </div>
               </div>
@@ -986,7 +950,8 @@ export default function SettingsPage() {
                   </h2>
                   <p className="text-xs text-gray-400">
                     {activePrompt.includes("system") ? "System prompt — static text sent to LLM" :
-                     activePrompt === "prompt_eval_user" ? "Jinja2 template — variables: {{ cpt_code }}, {{ icd1 }}, {{ carrier_id }}, {{ question_type }}, {{ question_text }}, {{ options }}, {{ rag_section }}, {{ clinical_section }}, {{ multi_select }}" :
+                     activePrompt === "prompt_eval_user" ? "Jinja2 template — variables: {{ cpt_code }}, {{ icd1 }}, {{ carrier_id }}, {{ question_type }}, {{ question_text }}, {{ options }}, {{ rag_section }}, {{ clinical_section }}, {{ signature_section }}, {{ multi_select }}" :
+                     activePrompt === "prompt_eval_order_user" ? "Jinja2 template — variables: same as First Pass (order form context instead of clinical notes, + {{ signature_section }})" :
                      activePrompt === "prompt_match_user" ? "Jinja2 template — variables: {{ question_id }}, {{ question_text }}, {{ question_type }}, {{ options }}, {{ saved_answers }}" :
                      "Jinja2 template — variables: {{ page_count }}, {{ context_str }}, {{ cpt_code }}, {{ cpt_desc }}, {{ icd1 }}, {{ extraction_schema }}"}
                   </p>
