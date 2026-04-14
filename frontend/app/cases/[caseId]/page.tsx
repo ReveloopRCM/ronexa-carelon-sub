@@ -136,11 +136,26 @@ export default function CaseDetailPage() {
               rel="noopener noreferrer"
               className="px-3 py-1.5 bg-green-600 text-white text-sm rounded hover:bg-green-700"
             >
-              Download Auth PDF
+              View Auth Confirmation
             </a>
           )}
         </div>
       )}
+
+      {/* Auth Confirmation Screenshot */}
+      {caseData.auth_pdf_url && caseData.auth_number && (
+        <div className="border rounded-lg overflow-hidden bg-gray-50">
+          <p className="text-xs text-gray-500 px-3 py-2 border-b bg-white font-medium">
+            Portal Auth Confirmation
+          </p>
+          <img
+            src={`${process.env.NEXT_PUBLIC_API_URL || ""}/api/cases/${caseData.id}/auth-pdf`}
+            alt="Authorization confirmation from portal"
+            className="w-full"
+          />
+        </div>
+      )}
+
       {caseData.denial_reason && (
         <div className="bg-red-50 border border-red-200 rounded p-4">
           <p className="font-semibold text-red-700">Denied</p>

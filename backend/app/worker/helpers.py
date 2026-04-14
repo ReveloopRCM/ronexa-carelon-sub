@@ -370,8 +370,8 @@ async def mark_case_complete(case_id: str, result: dict) -> None:
                 case.denial_reason = result["denial_reason"]
             if result.get("pend_reason"):
                 case.pend_reason = result["pend_reason"]
-            if result.get("auth_pdf_blob_key"):
-                case.auth_pdf_url = result["auth_pdf_blob_key"]
+            # Prefer actual PDF, fall back to confirmation screenshot (PNG)
+            case.auth_pdf_url = result.get("auth_pdf_blob_key") or result.get("confirmation_screenshot_key")
 
             # Approval tracking — gold card level + algorithm recommendation + approval type
             case.gold_card_level = result.get("gold_card_level")
