@@ -620,7 +620,7 @@ export default function ReviewPage() {
                     Portal Order Summary
                   </p>
                   <img
-                    src={`/api/cases/${caseInfo.exam_id}/auth-pdf`}
+                    src={`/api/cases/${caseId}/auth-pdf`}
                     alt="Order Summary from portal"
                     className="w-full"
                   />
