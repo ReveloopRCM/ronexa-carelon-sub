@@ -438,7 +438,7 @@ export default function ReviewPage() {
                   d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"
                 />
               </svg>
-              View Clinical PDF
+              {caseInfo.clinical_blob_key ? "View Clinical PDF" : "View Order PDF"}
             </a>
           )}
         </div>
@@ -876,7 +876,7 @@ export default function ReviewPage() {
 
             {/* Clinical Documents */}
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-5 space-y-3">
-              <h3 className="font-semibold text-blue-800">Clinical Documents to Fax</h3>
+              <h3 className="font-semibold text-blue-800">Documents to Fax</h3>
               {(caseInfo.clinical_blob_key || caseInfo.file_key) ? (
                 <div className="flex items-center gap-3">
                   <a
@@ -885,7 +885,7 @@ export default function ReviewPage() {
                     rel="noopener noreferrer"
                     className="text-sm text-blue-600 hover:text-blue-800 flex items-center gap-1 underline"
                   >
-                    View Clinical PDF
+                    {caseInfo.clinical_blob_key ? "View Clinical PDF" : "View Order PDF"}
                   </a>
                   <span className="text-xs text-gray-500">
                     ({caseInfo.clinical_blob_key || caseInfo.file_key})
