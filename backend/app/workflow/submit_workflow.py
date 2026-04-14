@@ -76,7 +76,14 @@ async def _run_submit(ctx: WorkflowContext, case_id: str, event: dict) -> dict:
     logger.info(f"SubmitWorkflow/{case_id}: loaded {len(approved_answers)} approved answers")
 
     # ── Submit via assigned worker (from WorkerLoop) ──
-    worker_id = event["worker_id"]
+    worker_id = event.get("worker_id")
+    if not worker_id:
+        logger.error(f"SubmitWorkflow/{case_id}: no worker_id in event — likely stale invocation from purge")
+        await ctx.run(
+            "mark_hold_no_worker", _mark_case_hold,
+            max_attempts=3, args=(case_id, "No worker_id in SubmitWorkflow event — stale invocation"),
+        )
+        return {"status": "hold", "hold_reason": "No worker_id — stale invocation"}
     from app.workflow.worker_session import run_finalize
 
     try:

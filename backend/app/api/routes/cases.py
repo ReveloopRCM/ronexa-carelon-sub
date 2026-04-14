@@ -392,8 +392,9 @@ async def requeue_case(case_id: str, db: AsyncSession = Depends(get_db)):
             detail=f"Case is {case.state.value} — only HOLD or FAILED cases can be requeued",
         )
 
-    # Purge stale Restate workflow invocation so re-dispatch isn't silently dropped
-    await purge_case_workflow(case_id)
+    # Purge stale CaseWorkflow only — NOT SubmitWorkflow (send-to-discover
+    # would create a new invocation with empty event → worker_id KeyError)
+    await purge_case_workflow(case_id, workflows=("CaseWorkflow",))
 
     # Reset case state
     case.state = CaseState.NOTES_UPLOADED
@@ -465,8 +466,9 @@ async def cure_and_requeue(
             detail=f"No valid fields to update. Allowed: {sorted(curable_fields)}",
         )
 
-    # Purge stale Restate workflow invocation so re-dispatch isn't silently dropped
-    await purge_case_workflow(case_id)
+    # Purge stale CaseWorkflow only — NOT SubmitWorkflow (send-to-discover
+    # would create a new invocation with empty event → worker_id KeyError)
+    await purge_case_workflow(case_id, workflows=("CaseWorkflow",))
 
     # Reset state and job
     old_reason = case.hold_reason

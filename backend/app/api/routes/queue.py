@@ -762,8 +762,10 @@ async def _enqueue_rerun_job(case_id: str) -> None:
     from app.db.models import SubmissionJob, JobStatus
     from sqlalchemy import update
 
-    # Purge stale Restate workflow invocation so re-dispatch isn't silently dropped
-    await purge_case_workflow(case_id)
+    # Purge stale CaseWorkflow only — NOT SubmitWorkflow. The send-to-discover
+    # approach creates a real invocation if none exists, which would start
+    # SubmitWorkflow with an empty event dict (no worker_id → KeyError).
+    await purge_case_workflow(case_id, workflows=("CaseWorkflow",))
 
     async with async_session_factory() as db:
         await db.execute(
@@ -989,8 +991,9 @@ async def reject_clinical_review(
     case.signature_replay = False
     case.signature_id = None
 
-    # Purge stale Restate workflow invocation so re-dispatch isn't silently dropped
-    await purge_case_workflow(case_id)
+    # Purge stale CaseWorkflow only — NOT SubmitWorkflow (send-to-discover
+    # would create a new invocation with empty event → worker_id KeyError)
+    await purge_case_workflow(case_id, workflows=("CaseWorkflow",))
 
     # Reset job for re-processing
     existing_job = await db.execute(
