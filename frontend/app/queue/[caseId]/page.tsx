@@ -194,12 +194,22 @@ export default function ReviewPage() {
   async function handleFaxValidate(action: "approved" | "rejected") {
     setSubmitting(true);
     try {
-      await validateFax(caseId, {
+      const result = await validateFax(caseId, {
         action,
         rep_id: "fax_rep",
         reason: action === "rejected" ? faxRejectReason || "Rejected by rep" : undefined,
       });
-      router.push("/queue");
+      if (action === "approved") {
+        if (result.fax_sent) {
+          setToast({ message: `Fax sent successfully (ID: ${result.message_id})`, type: "success" });
+        } else {
+          setToast({ message: `Fax failed: ${result.fax_error || "Unknown error"}`, type: "error" });
+        }
+        setTimeout(() => router.push("/queue"), 2000);
+      } else {
+        setToast({ message: "Fax rejected — case moved to Pended", type: "success" });
+        setTimeout(() => router.push("/queue"), 1500);
+      }
     } catch (err: any) {
       setToast({ message: err.message || "An error occurred", type: "error" });
     } finally {

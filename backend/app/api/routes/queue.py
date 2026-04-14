@@ -468,12 +468,25 @@ async def validate_fax(
         data={"reason": body.reason},
     )
 
+    fax_result = None
     if body.action == "approved":
         # Send fax inline — no awakeable needed
         try:
-            await _send_fax_inline(case)
+            fax_result = await _send_fax_inline(case)
+            if fax_result and fax_result.get("ok"):
+                await repo.create_audit_event(
+                    db,
+                    case_id=case_id,
+                    actor="system",
+                    action="fax_sent",
+                    data={
+                        "message_id": fax_result.get("message_id"),
+                        "status": fax_result.get("status"),
+                    },
+                )
         except Exception as e:
             logger.error(f"validate_fax/{case_id}: fax send failed: {e}")
+            fax_result = {"ok": False, "error": str(e)[:300]}
             await repo.create_audit_event(
                 db,
                 case_id=case_id,
@@ -486,7 +499,14 @@ async def validate_fax(
     case.state = CaseState.PENDED
     await db.commit()
 
-    return {"status": body.action}
+    response = {"status": body.action}
+    if fax_result:
+        response["fax_sent"] = fax_result.get("ok", False)
+        if fax_result.get("ok"):
+            response["message_id"] = fax_result.get("message_id")
+        else:
+            response["fax_error"] = fax_result.get("error", "Unknown error")
+    return response
 
 
 @router.post("/{case_id}/flag")
@@ -800,21 +820,22 @@ async def _wake_workers() -> None:
             logger.debug(f"_wake_workers: failed to wake {worker_id}: {e}")
 
 
-async def _send_fax_inline(case) -> None:
+async def _send_fax_inline(case) -> dict:
     """Send clinical notes fax inline for a pended case (RingCentral API).
 
     Called directly from validate-fax endpoint — no awakeable needed.
+    Returns the fax result dict from RingCentral.
     """
     from app.services.ringcentral_fax import fax_clinical_notes
 
     clinical_blob_key = case.clinical_blob_key or case.file_key
     if not clinical_blob_key:
         logger.warning(f"validate_fax/{case.id}: no clinical blob key — cannot fax")
-        return
+        return {"ok": False, "error": "No clinical documents available to fax"}
 
     patient_name = f"{case.last_name or ''} {case.first_name or ''}"
 
-    await fax_clinical_notes(
+    result = await fax_clinical_notes(
         clinical_blob_key=clinical_blob_key,
         order_id=getattr(case, "auth_number", "") or "",
         patient_name=patient_name,
@@ -823,7 +844,8 @@ async def _send_fax_inline(case) -> None:
         dob=case.dob or "",
     )
 
-    logger.info(f"validate_fax/{case.id}: fax sent")
+    logger.info(f"validate_fax/{case.id}: fax result={result}")
+    return result
 
 
 def _serialize_question(q) -> dict:
