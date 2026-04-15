@@ -164,6 +164,7 @@ async def list_queue(
             "approval_type": getattr(c, "approval_type", None),
             "algorithm_recommendation": getattr(c, "algorithm_recommendation", None),
             "signature_replay": getattr(c, "signature_replay", False),
+            "gold_card_level": getattr(c, "gold_card_level", None),
         }
         for c in cases
     ]

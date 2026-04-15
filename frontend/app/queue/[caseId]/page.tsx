@@ -382,13 +382,18 @@ export default function ReviewPage() {
                 {caseInfo.auto_approved ? "✓" : "⚠"}
               </span>
               <span>
-                {(caseInfo.gold_card_level ?? 0) >= 2 && caseInfo.auto_approved
-                  ? `Gold Card (Level ${caseInfo.gold_card_level}) — Algorithm Approved`
-                  : (caseInfo.gold_card_level ?? 0) >= 2 && !caseInfo.auto_approved
-                    ? `Gold Card (Level ${caseInfo.gold_card_level}) — Algorithm Pend`
-                    : caseInfo.auto_approved
-                      ? "Algorithm Approved — Clinical Criteria Met"
-                      : "Algorithm Pend — Review Required"}
+                {caseInfo.auto_approved
+                  ? "Algorithm Approved — Clinical Criteria Met"
+                  : "Algorithm Pend — Review Required"}
+                {caseInfo.gold_card_level != null && (
+                  <span className={`ml-2 text-xs px-1.5 py-0.5 rounded-full ${
+                    caseInfo.gold_card_level >= 2 ? "bg-yellow-100 text-yellow-700" :
+                    caseInfo.gold_card_level === 1 ? "bg-blue-100 text-blue-700" :
+                    "bg-gray-100 text-gray-500"
+                  }`}>
+                    GC:{caseInfo.gold_card_level}
+                  </span>
+                )}
               </span>
             </div>
           )}

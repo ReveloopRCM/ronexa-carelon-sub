@@ -149,9 +149,13 @@ export default function QueuePage() {
                       No Auth Required
                     </span>
                   )}
-                  {c.approval_type === "gold_card" && (
-                    <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-yellow-100 text-yellow-700">
-                      Gold Card
+                  {c.gold_card_level != null && (
+                    <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
+                      c.gold_card_level >= 2 ? "bg-yellow-100 text-yellow-700" :
+                      c.gold_card_level === 1 ? "bg-blue-100 text-blue-700" :
+                      "bg-gray-100 text-gray-500"
+                    }`}>
+                      GC:{c.gold_card_level}
                     </span>
                   )}
                   {c.approval_type === "auto_approved" && (

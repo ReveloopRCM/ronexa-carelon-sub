@@ -599,6 +599,7 @@ def _serialize_case(case) -> dict:
         "updated_at": case.updated_at.isoformat() if case.updated_at else None,
         "submitted_at": case.submitted_at.isoformat() if case.submitted_at else None,
         "flags": (case.raw_data or {}).get("_flags", []),
+        "gold_card_level": getattr(case, "gold_card_level", None),
     }
 
 

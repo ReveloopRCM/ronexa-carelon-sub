@@ -113,6 +113,17 @@ export default function CaseDetailPage() {
           <p className="text-sm text-gray-600">
             Center: {caseData.center_abbr || caseData.center_npi}
           </p>
+          {caseData.gold_card_level != null && (
+            <p className="text-sm">
+              <span className={`inline-block text-xs px-1.5 py-0.5 rounded-full font-medium ${
+                caseData.gold_card_level >= 2 ? "bg-yellow-100 text-yellow-700" :
+                caseData.gold_card_level === 1 ? "bg-blue-100 text-blue-700" :
+                "bg-gray-100 text-gray-500"
+              }`}>
+                Gold Card: {caseData.gold_card_level}
+              </span>
+            </p>
+          )}
         </div>
       </div>
 
