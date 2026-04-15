@@ -1703,7 +1703,12 @@ def check_duplicate_auth(
         if len(parts) > 1:
             exam_label = parts[1].strip().lower()
 
-    matching = []
+    # Two-tier detection:
+    #   Tier 1 (≤7 days): duplicate=True — high risk, almost certainly same exam
+    #   Tier 2 (8-30 days): recent_auth_warning=True — informational, portal may pend
+    matching_7d = []
+    warning_30d = []
+
     for auth in existing_auths:
         exam_desc = (auth.get("exam_description") or "").strip().lower()
         outcome = (auth.get("outcome") or "").strip().lower()
@@ -1723,32 +1728,50 @@ def check_duplicate_auth(
             or order_status in ("authorized", "open", "active", "in process")
         )
 
-        # Check if the auth is recent (within 7 days)
-        is_recent = True  # Default to blocking if we can't parse the date
+        if not (has_match and is_active):
+            continue
+
+        # Parse date and bucket into 7-day or 30-day tier
+        days_ago = None
         if dos_str:
             try:
                 from datetime import datetime, timedelta
-                # Portal dates can be MM/DD/YYYY or M/D/YYYY
                 for fmt in ("%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d"):
                     try:
                         dos_date = datetime.strptime(dos_str, fmt).date()
                         days_ago = (date.today() - dos_date).days
-                        is_recent = days_ago <= 7
                         break
                     except ValueError:
                         continue
             except Exception:
-                is_recent = True  # Can't parse — err on side of caution
+                pass
 
-        if has_match and is_active and is_recent:
-            matching.append(auth)
+        if days_ago is None:
+            # Can't parse date — treat as 7-day match (err on side of caution)
+            matching_7d.append(auth)
+        elif days_ago <= 7:
+            matching_7d.append(auth)
+        elif days_ago <= 30:
+            warning_30d.append(auth)
 
-    if matching:
-        auth_ids = ", ".join(a.get("order_id", "?") for a in matching)
+    # Tier 1: ≤7 days — flag as duplicate
+    if matching_7d:
+        auth_ids = ", ".join(a.get("order_id", "?") for a in matching_7d)
         return {
             "duplicate": True,
-            "matching_auths": matching,
+            "matching_auths": matching_7d,
             "reason": f"Existing active auth(s) for CPT {cpt_code}: {auth_ids}",
+        }
+
+    # Tier 2: 8-30 days — informational warning, don't block
+    if warning_30d:
+        auth_ids = ", ".join(a.get("order_id", "?") for a in warning_30d)
+        return {
+            "duplicate": False,
+            "matching_auths": [],
+            "recent_auth_warning": True,
+            "warning_auths": warning_30d,
+            "reason": f"Recent auth(s) within 30 days for CPT {cpt_code}: {auth_ids} — portal may pend",
         }
 
     return {"duplicate": False, "matching_auths": [], "reason": None}

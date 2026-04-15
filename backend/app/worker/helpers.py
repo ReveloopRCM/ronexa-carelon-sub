@@ -482,6 +482,12 @@ async def save_flow_checks(case_id: str, result: dict) -> None:
                 "existing_count": len(existing_auths) if isinstance(existing_auths, list) else 0,
             }))
 
+    # Recent auth warning (8-30 day window) — informational, not blocking
+    if result.get("recent_auth_warning"):
+        checks.append(("flow_check:recent_auth_warning", {
+            "warning": result["recent_auth_warning"],
+        }))
+
     # Provider match — already at top level from result.update(r["data"])
     if result.get("provider_match"):
         pm = result["provider_match"]

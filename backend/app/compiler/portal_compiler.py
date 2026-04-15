@@ -213,6 +213,13 @@ class PortalCompiler:
                         "cpt_search_text": cpt_search_text,
                     }
 
+                # Tier 2: 8-30 day warning — log but don't block
+                if dup_check.get("recent_auth_warning"):
+                    logger.info(
+                        f"Recent auth warning (8-30 days): {dup_check['reason']}"
+                    )
+                    result["recent_auth_warning"] = dup_check["reason"]
+
                 # Store for downstream use (workflow safety-net check)
                 result["cpt_search_text"] = cpt_search_text
             # ────────────────────────────────────────────────────────
