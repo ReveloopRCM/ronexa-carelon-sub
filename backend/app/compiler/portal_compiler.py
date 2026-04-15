@@ -1073,9 +1073,8 @@ class PortalCompiler:
 
         # ---- Build rep_answers for LLM context (standardized input) ----
         # For first pass: rep_answers_for_llm is None — LLM evaluates fresh.
-        # For reruns: load rep's approved answers up to changed_group_id.
-        # This way the LLM trusts the rep's choices for earlier nodes in the
-        # question tree and evaluates fresh for downstream nodes.
+        # For reruns: load ALL rep-approved answers so the LLM has full context
+        # from the first pass (clinical + RAG + signature + approved Q&A).
         rep_answers_for_llm: list[dict] | None = None
         if resume_answers and changed_group_id is not None:
             rep_answers_for_llm = []
@@ -1083,18 +1082,17 @@ class PortalCompiler:
                 gid = ans.get("GroupId")
                 if gid is None:
                     gid = ans.get("group_id")
-                if gid is not None and int(gid) <= changed_group_id:
-                    rep_answers_for_llm.append({
-                        "group_id": int(gid),
-                        "question_id": ans.get("QuestionId") or ans.get("question_id", ""),
-                        "question_text": ans.get("question_text", ""),
-                        "answer_value": (ans.get("Values") or ans.get("Value")
-                                         or ans.get("answer_value", "")),
-                        "answer_text": ans.get("answer_text", ""),
-                    })
+                rep_answers_for_llm.append({
+                    "group_id": int(gid) if gid is not None else 0,
+                    "question_id": ans.get("QuestionId") or ans.get("question_id", ""),
+                    "question_text": ans.get("question_text", ""),
+                    "answer_value": (ans.get("Values") or ans.get("Value")
+                                     or ans.get("answer_value", "")),
+                    "answer_text": ans.get("answer_text", ""),
+                })
             logger.info(
                 f"RE-RUN: {len(rep_answers_for_llm)} rep answers loaded "
-                f"(up to GroupId={changed_group_id})"
+                f"(all approved Q&A for LLM context)"
             )
 
         # ── Load algorithm signature for this CPT+ICD (if exists) ──

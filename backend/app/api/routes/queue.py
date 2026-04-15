@@ -658,14 +658,14 @@ def _apply_review(
 
         if level == 1:
             q.review_state = ReviewState.REP_EDITED if rep_edited else ReviewState.REP_APPROVED
-            q.rep_answer = {"Value": rep_value} if rep_edited else q.rep_answer
+            q.rep_answer = {"Value": rep_value}
             q.l1_reviewed_by = rep_id
             q.l1_reviewed_at = datetime.utcnow()
             q.l1_note = l1_note if (rep_edited and l1_note) else None
         else:
             # L2 can override L1's answer
+            q.rep_answer = {"Value": rep_value}
             if rep_edited:
-                q.rep_answer = {"Value": rep_value}
                 q.review_state = ReviewState.REP_EDITED
             q.l2_reviewed_by = rep_id
             q.l2_reviewed_at = datetime.utcnow()
