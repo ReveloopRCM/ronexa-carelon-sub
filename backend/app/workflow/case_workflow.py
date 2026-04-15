@@ -312,7 +312,7 @@ async def _mark_auto_approved(case_id: str, first_pass_result: dict) -> None:
             result_data = first_pass_result.get("result", {})
             case.gold_card_level = result_data.get("gold_card_level")
             case.algorithm_recommendation = result_data.get("algorithm_recommendation")
-            if (case.gold_card_level or 0) >= 2:
+            if (case.gold_card_level or 0) >= 2 or result_data.get("is_bypass"):
                 case.approval_type = "gold_card"
             else:
                 case.approval_type = "auto_approved"

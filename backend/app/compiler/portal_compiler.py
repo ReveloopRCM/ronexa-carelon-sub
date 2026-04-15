@@ -148,8 +148,9 @@ class PortalCompiler:
                         result["auto_approved"] = None
                         result["cdo_approved"] = None
 
-                    # Propagate gold card level (set during clinical_diagnosis phase)
+                    # Propagate gold card level + bypass flag (set during clinical_diagnosis phase)
                     result["gold_card_level"] = getattr(clinical_flow, "gold_card_level", 0)
+                    result["is_bypass"] = getattr(clinical_flow, "is_bypass", False)
 
                     return result
 
@@ -331,9 +332,10 @@ class PortalCompiler:
                 return {"case_state": "HOLD", "hold_reason": r["message"]}
             result.update(r.get("data", {}))
 
-            # Propagate gold card level from clinical flow for approval tracking
+            # Propagate gold card level + bypass flag from clinical flow for approval tracking
             if hasattr(clinical_flow, "gold_card_level"):
                 result["gold_card_level"] = clinical_flow.gold_card_level
+                result["is_bypass"] = getattr(clinical_flow, "is_bypass", False)
 
             # Step 2: hdnAction=20 — transition from clinical SPA to exam summary page
             logger.info("Transitioning: clinical SPA → exam summary (hdnAction=20)")
