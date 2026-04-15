@@ -393,10 +393,7 @@ class ClinicalExamFlow:
                 logger.warning(f"Could not parse bypass/gold card: {e}")
 
             if self.is_bypass:
-                logger.info(f"🏆 GOLD CARD LEVEL {self.gold_card_level} detected — but forcing normal pathway for now")
-                # TODO: Enable bypass path once normal pathway approvals are working
-                # For now, force normal pathway to test clinical question answers
-                self.is_bypass = False
+                logger.info(f"🏆 GOLD CARD LEVEL {self.gold_card_level} detected — bypassing clinical questions")
             else:
                 logger.info(f"No gold card bypass (level={self.gold_card_level})")
 
