@@ -19,7 +19,7 @@ from sqlalchemy import select
 from app.core.settings import settings
 from app.db.database import get_db
 from app.db import repositories as repo
-from app.db.models import AuditEvent, Case, CaseState, ReviewState, SubmissionJob
+from app.db.models import AuditEvent, Case, CaseState, Question, ReviewState, SubmissionJob
 from app.workflow.restate_utils import purge_case_workflow
 
 logger = logging.getLogger(__name__)
@@ -423,6 +423,19 @@ async def update_pathway(
     raw = dict(case.raw_data or {})
     raw["rerun_changed_group_id"] = 0
     case.raw_data = raw
+
+    # Update the pathway Question's rep_answer so reruns use the new pathway.
+    # worker_loop loads rep answers from Question records — without this,
+    # the compiler would use the OLD pathway_id from the original review.
+    pathway_q = await db.execute(
+        select(Question)
+        .where(Question.case_id == case.id)
+        .where(Question.group_id == 0)
+    )
+    pathway_question = pathway_q.scalar_one_or_none()
+    if pathway_question:
+        pathway_question.rep_answer = {"Value": body.pathway_id}
+        pathway_question.review_state = ReviewState.REP_EDITED
 
     await repo.create_audit_event(
         db, case_id=case_id,
