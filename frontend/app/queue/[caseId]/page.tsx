@@ -110,10 +110,10 @@ export default function ReviewPage() {
   const hasEdits = data?.questions?.some((q: any) => isEdited(q)) ?? false;
 
   async function handleSubmit() {
-    if (!data?.questions?.length) return;
+    if (!data?.questions?.length && !data?.case?.auto_approved) return;
     setSubmitting(true);
     try {
-      const answers = data.questions
+      const answers = (data.questions || [])
         .filter((q: any) => q.review_state === "AI_SUGGESTED" || q.review_state === "REP_APPROVED" || q.review_state === "REP_EDITED")
         .map((q: any) => ({
           group_id: q.group_id,
