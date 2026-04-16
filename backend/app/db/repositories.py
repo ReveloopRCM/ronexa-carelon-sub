@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Sequence
 
-from sqlalchemy import select, update
+from sqlalchemy import select, update, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
@@ -61,6 +61,8 @@ async def list_cases(
     state: CaseState | None = None,
     center_npi: str | None = None,
     batch_id: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
     limit: int = 100,
     offset: int = 0,
 ) -> Sequence[Case]:
@@ -71,6 +73,14 @@ async def list_cases(
         q = q.where(Case.center_npi == center_npi)
     if batch_id:
         q = q.where(Case.batch_id == batch_id)
+    if date_from:
+        from datetime import datetime as _dt
+        d = _dt.strptime(date_from, "%Y-%m-%d")
+        q = q.where(func.coalesce(Case.submitted_at, Case.updated_at) >= d)
+    if date_to:
+        from datetime import datetime as _dt, timedelta as _td
+        d = _dt.strptime(date_to, "%Y-%m-%d") + _td(days=1)
+        q = q.where(func.coalesce(Case.submitted_at, Case.updated_at) < d)
     q = q.order_by(Case.sort_priority, Case.scheduled_dt.asc().nulls_last(), Case.ingested_at)
     q = q.limit(limit).offset(offset)
     result = await db.execute(q)

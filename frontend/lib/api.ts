@@ -46,6 +46,8 @@ export async function listCases(params?: {
   state?: string;
   center_npi?: string;
   batch_id?: string;
+  date_from?: string;
+  date_to?: string;
   limit?: number;
   offset?: number;
 }) {
@@ -53,6 +55,8 @@ export async function listCases(params?: {
   if (params?.state) searchParams.set("state", params.state);
   if (params?.center_npi) searchParams.set("center_npi", params.center_npi);
   if (params?.batch_id) searchParams.set("batch_id", params.batch_id);
+  if (params?.date_from) searchParams.set("date_from", params.date_from);
+  if (params?.date_to) searchParams.set("date_to", params.date_to);
   if (params?.limit) searchParams.set("limit", String(params.limit));
   if (params?.offset) searchParams.set("offset", String(params.offset));
   const qs = searchParams.toString();

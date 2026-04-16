@@ -24,6 +24,8 @@ async def list_cases(
     state: str | None = None,
     center_npi: str | None = None,
     batch_id: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
     limit: int = 100,
     offset: int = 0,
     db: AsyncSession = Depends(get_db),
@@ -35,6 +37,8 @@ async def list_cases(
         state=state_enum,
         center_npi=center_npi,
         batch_id=batch_id,
+        date_from=date_from,
+        date_to=date_to,
         limit=limit,
         offset=offset,
     )

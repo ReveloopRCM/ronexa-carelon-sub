@@ -67,6 +67,7 @@ export default function CasesPage() {
   const [tab, setTab] = useState<Tab>("all_active");
   const [activeBucket, setActiveBucket] = useState("all");
   const [stateFilter, setStateFilter] = useState("");
+  const [dateFilter, setDateFilter] = useState(new Date().toISOString().slice(0, 10));
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<any>(null);
@@ -95,10 +96,14 @@ export default function CasesPage() {
     }
   }, [allCases, tab, activeBucket, stateFilter]);
 
-  async function loadCases() {
+  async function loadCases(dateOverride?: string) {
     setLoading(true);
     try {
-      const data = await listCases({ limit: 500 });
+      const d = dateOverride ?? dateFilter;
+      const data = await listCases({
+        limit: 500,
+        ...(d ? { date_from: d, date_to: d } : {}),
+      });
       setAllCases(data);
     } catch (err) {
       console.error(err);
@@ -199,9 +204,18 @@ export default function CasesPage() {
           </button>
         ))}
 
-        {/* Outcome filter for Completed tab */}
+        {/* Filters for Completed tab */}
         {tab === "completed" && (
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-2">
+            <input
+              type="date"
+              value={dateFilter}
+              onChange={(e) => {
+                setDateFilter(e.target.value);
+                loadCases(e.target.value);
+              }}
+              className="border rounded px-3 py-1.5 text-sm"
+            />
             <select
               value={stateFilter}
               onChange={(e) => setStateFilter(e.target.value)}
