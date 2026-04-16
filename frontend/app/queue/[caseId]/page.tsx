@@ -992,7 +992,7 @@ export default function ReviewPage() {
             )}
             <button
               onClick={handleSubmit}
-              disabled={submitting || pendingQuestions.length === 0}
+              disabled={submitting || (pendingQuestions.length === 0 && !caseInfo.auto_approved)}
               className={`px-4 py-1.5 rounded text-sm text-white disabled:opacity-50 ${
                 level === 2
                   ? "bg-green-600 hover:bg-green-700"
