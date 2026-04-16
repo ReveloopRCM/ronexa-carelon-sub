@@ -66,14 +66,23 @@ async def _run_submit(ctx: WorkflowContext, case_id: str, event: dict) -> dict:
     )
 
     if not approved_answers:
-        logger.warning(f"SubmitWorkflow/{case_id}: no approved answers found")
-        await ctx.run(
-            "mark_hold_no_answers", _mark_case_hold,
-            max_attempts=3, args=(case_id, "No approved answers found for submission"),
+        # Auto-approved cases (gold card bypass, algorithm approved) have 0 questions.
+        # The portal flow still works — SetSelectedDiagnosis with isBypassClinicalQuestions=true
+        # makes the portal skip questions and auto-approve.
+        is_auto = await ctx.run(
+            "check_auto_approved", _check_auto_approved, max_attempts=3, args=(case_id,),
         )
-        return {"status": "hold", "hold_reason": "No approved answers"}
-
-    logger.info(f"SubmitWorkflow/{case_id}: loaded {len(approved_answers)} approved answers")
+        if not is_auto:
+            logger.warning(f"SubmitWorkflow/{case_id}: no approved answers found")
+            await ctx.run(
+                "mark_hold_no_answers", _mark_case_hold,
+                max_attempts=3, args=(case_id, "No approved answers found for submission"),
+            )
+            return {"status": "hold", "hold_reason": "No approved answers"}
+        approved_answers = []
+        logger.info(f"SubmitWorkflow/{case_id}: auto-approved case — proceeding with 0 answers")
+    else:
+        logger.info(f"SubmitWorkflow/{case_id}: loaded {len(approved_answers)} approved answers")
 
     # ── Submit via assigned worker (from WorkerLoop) ──
     worker_id = event.get("worker_id")
@@ -146,6 +155,16 @@ async def _run_submit(ctx: WorkflowContext, case_id: str, event: dict) -> dict:
 
 
 # ── DB Helpers ──
+
+
+async def _check_auto_approved(case_id: str) -> bool:
+    """Check if a case is auto-approved (0 questions expected)."""
+    from app.db.database import async_session_factory
+    from app.db import repositories as repo
+
+    async with async_session_factory() as db:
+        case = await repo.get_case(db, case_id)
+        return bool(case and case.auto_approved)
 
 
 async def _set_case_submitting(case_id: str) -> None:
