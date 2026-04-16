@@ -158,14 +158,9 @@ export default function QueuePage() {
                       GC:{c.gold_card_level}
                     </span>
                   )}
-                  {c.approval_type === "auto_approved" && (
-                    <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-green-100 text-green-700">
-                      Auto Approved
-                    </span>
-                  )}
-                  {c.auto_approved === true && c.approval_type === "algorithm" && (
-                    <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-green-100 text-green-700">
-                      Algorithm Approved
+                  {c.auto_approved === true && (
+                    <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-purple-100 text-purple-700">
+                      Auto Approve
                     </span>
                   )}
                   {c.auto_approved === false && !c.approval_type && (
