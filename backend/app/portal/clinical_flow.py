@@ -443,6 +443,7 @@ class ClinicalExamFlow:
         self,
         preferred_icd: str | None = None,
         preferred_pathway_id: str | None = None,
+        clinical_context: dict | None = None,
     ) -> dict:
         """Get available pathways and select the best match.
 
@@ -511,7 +512,7 @@ class ClinicalExamFlow:
             # Priority 2: ICD match + LLM
             if not selected:
                 diag_desc = self.diagnosis.get("Icd9Text") or self.diagnosis.get("Current_ICDCodeDesc")
-                selected = await self._select_pathway_with_llm(algorithms, preferred_icd, diag_desc)
+                selected = await self._select_pathway_with_llm(algorithms, preferred_icd, diag_desc, clinical_context)
             self.pathway = selected
             logger.info(f"Selected pathway: {selected.get('DisplayName', '?')}")
 
@@ -1515,6 +1516,7 @@ class ClinicalExamFlow:
         algorithms: list[dict],
         preferred_icd: str | None = None,
         diagnosis_desc: str | None = None,
+        clinical_context: dict | None = None,
     ) -> dict:
         """Use LLM to select the best pathway when exact ICD match fails.
 
@@ -1563,7 +1565,7 @@ class ClinicalExamFlow:
         try:
             decision = await decide_answer(
                 observation=observation,
-                clinical_context={},
+                clinical_context=clinical_context or {},
                 multi_select=False,
                 rag_examples="",
             )

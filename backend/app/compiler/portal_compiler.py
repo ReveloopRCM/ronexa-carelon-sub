@@ -272,6 +272,7 @@ class PortalCompiler:
             r = await clinical_flow.select_pathway(
                 preferred_icd=icd_code,
                 preferred_pathway_id=rep_pathway_id,
+                clinical_context=clinical_context,
             )
             if not r["ok"]:
                 return {"case_state": "HOLD", "hold_reason": r["message"]}
