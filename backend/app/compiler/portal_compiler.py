@@ -5,6 +5,7 @@ not here. Dispatches phases by type: API_SEQUENCE, WEBFORM, RECURSIVE_STATE_MACH
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any
@@ -439,6 +440,21 @@ class PortalCompiler:
                 dob=case.get("dob", ""),
                 policy_num=case.get("policy_num", ""),
             )
+            # Retry once on "Member not found" — portal can be transiently slow
+            if not r["ok"] and "Member not found" in r.get("message", ""):
+                logger.warning("Member not found on first attempt — retrying after navigate home")
+                try:
+                    await session.page.evaluate("__doPostBack('TopMenu','')")
+                    await session.page.wait_for_load_state("domcontentloaded", timeout=15000)
+                except Exception as nav_err:
+                    logger.warning(f"Navigate home for retry failed: {nav_err}")
+                await asyncio.sleep(3)
+                r = await wf.search_member(
+                    first_name=case.get("first_name", ""),
+                    last_name=case.get("last_name", ""),
+                    dob=case.get("dob", ""),
+                    policy_num=case.get("policy_num", ""),
+                )
             if not r["ok"]:
                 return {"case_state": "HOLD", "hold_reason": r["message"]}
             result.update(r.get("data", {}))
