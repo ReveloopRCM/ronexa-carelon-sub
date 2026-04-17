@@ -552,6 +552,10 @@ class ClinicalExamFlow:
                 "total_pathways": len(algorithms),
                 "pathway_options": pathway_options,
                 "pathway_selected_id": selected.get("Id", ""),
+                "ai_confidence": selected.get("_ai_confidence"),
+                "ai_evidence": selected.get("_ai_evidence"),
+                "ai_reasoning": selected.get("_ai_reasoning"),
+                "ai_gap": selected.get("_ai_gap"),
             })
 
         except Exception as e:
@@ -1572,6 +1576,10 @@ class ClinicalExamFlow:
             # Find the matching algorithm by ID
             for alg in algorithms:
                 if alg.get("Id") == selected_id:
+                    alg["_ai_confidence"] = decision.confidence
+                    alg["_ai_evidence"] = decision.evidence
+                    alg["_ai_reasoning"] = decision.reasoning
+                    alg["_ai_gap"] = decision.gap
                     return alg
 
             logger.warning(f"LLM returned unknown pathway ID: {selected_id}")

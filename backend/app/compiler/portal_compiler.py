@@ -307,6 +307,10 @@ class PortalCompiler:
                 "options": pathway_options,
                 "selected_id": pathway_selected_id,
                 "selected_name": pathway_name,
+                "confidence": pathway_data.get("ai_confidence"),
+                "evidence": pathway_data.get("ai_evidence"),
+                "reasoning": pathway_data.get("ai_reasoning"),
+                "gap": pathway_data.get("ai_gap"),
             }
             logger.info(
                 f"clinical_pathway: stored _pathway_decision "
@@ -1392,6 +1396,32 @@ class PortalCompiler:
                     }
                     for obs, dec in all_decisions
                 ]
+                # Prepend pathway decision so it's saved as Question group_id=0
+                # with AI metadata (confidence, evidence, reasoning)
+                pw_dec = context_vars.get("_pathway_decision")
+                if pw_dec and pw_dec.get("selected_id"):
+                    serializable_decisions.insert(0, {
+                        "question_id": "pathway_selection",
+                        "group_id": 0,
+                        "question_text": pw_dec["question_text"],
+                        "question_type": pw_dec["question_type"],
+                        "options": pw_dec["options"],
+                        "portal_answer": {
+                            "QuestionId": "pathway_selection",
+                            "Values": [pw_dec["selected_id"]],
+                        },
+                        "confidence": pw_dec.get("confidence"),
+                        "evidence": pw_dec.get("evidence"),
+                        "reasoning": pw_dec.get("reasoning"),
+                        "gap": pw_dec.get("gap"),
+                        "pathway_rationale": None,
+                        "chain_coherence": None,
+                        "notes_answer_value": None,
+                        "notes_confidence": None,
+                        "notes_reasoning": None,
+                        "approval_gap": None,
+                    })
+
                 result["answers"] = serializable_decisions
                 result["review_round"] = review_round
                 # Return to workflow — it will save to DB and create awakeable
