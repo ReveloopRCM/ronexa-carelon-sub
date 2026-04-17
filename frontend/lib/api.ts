@@ -192,6 +192,13 @@ export async function flagCase(caseId: string, rep_id: string, reason: string) {
   });
 }
 
+export async function sendToHold(caseId: string, rep_id: string, reason: string) {
+  return apiFetch(`/queue/${caseId}/send-to-hold`, {
+    method: "POST",
+    body: JSON.stringify({ rep_id, reason }),
+  });
+}
+
 export async function validateFax(
   caseId: string,
   data: { action: "approved" | "rejected"; rep_id: string; reason?: string }

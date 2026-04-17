@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { confirmClinicalReview, confirmNoAuth, flagCase, getQueueItem, markAlreadyWorked, rejectClinicalReview, rejectNoAuth, resolveL1, resolveL2, rerunL2, submitBatchReview, updatePathway, validateFax } from "@/lib/api";
+import { confirmClinicalReview, confirmNoAuth, flagCase, getQueueItem, markAlreadyWorked, rejectClinicalReview, rejectNoAuth, resolveL1, resolveL2, rerunL2, sendToHold, submitBatchReview, updatePathway, validateFax } from "@/lib/api";
 
 export default function ReviewPage() {
   const params = useParams();
@@ -174,6 +174,21 @@ export default function ReviewPage() {
       router.push("/queue");
     } catch (err: any) {
       setToast({ message: err.message || "An error occurred", type: "error" });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleSendToHold() {
+    const reason = prompt("Enter hold reason (e.g., incorrect ICD-10, missing patient info):");
+    if (!reason) return;
+    setSubmitting(true);
+    try {
+      await sendToHold(caseId, "rep_1", reason);
+      setToast({ message: "Case moved to hold — fix patient data and requeue.", type: "success" });
+      setTimeout(() => router.push("/queue"), 1200);
+    } catch (err: any) {
+      setToast({ message: err.message || "Error sending to hold", type: "error" });
     } finally {
       setSubmitting(false);
     }
@@ -495,6 +510,52 @@ export default function ReviewPage() {
             ) : (
               <p className="text-sm text-indigo-700 font-medium">{caseInfo.pathway_name}</p>
             )}
+
+            {/* AI reasoning for pathway selection */}
+            {(() => {
+              const pathwayQ = pendingQuestions.find((q: any) => q.group_id === 0);
+              if (!pathwayQ) return null;
+              return (
+                <div className="space-y-2 mt-3 pt-3 border-t">
+                  {pathwayQ.ai_confidence != null && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-gray-500">Confidence:</span>
+                      <div className="w-20 bg-gray-200 rounded-full h-1.5">
+                        <div
+                          className={`h-1.5 rounded-full ${
+                            (pathwayQ.ai_confidence || 0) >= 90 ? "bg-green-500" :
+                            (pathwayQ.ai_confidence || 0) >= 70 ? "bg-amber-500" : "bg-red-500"
+                          }`}
+                          style={{ width: `${pathwayQ.ai_confidence || 0}%` }}
+                        />
+                      </div>
+                      <span className="text-xs font-medium">{pathwayQ.ai_confidence || 0}%</span>
+                    </div>
+                  )}
+                  {pathwayQ.ai_evidence && (
+                    <blockquote className="border-l-4 border-blue-300 pl-3 text-xs italic text-gray-600 bg-blue-50 p-2 rounded">
+                      {pathwayQ.ai_evidence}
+                    </blockquote>
+                  )}
+                  {pathwayQ.ai_approval_gap && (
+                    <div className="bg-green-50 border border-green-200 text-green-800 text-xs p-2 rounded">
+                      <span className="font-medium">Approval Bridge:</span> {pathwayQ.ai_approval_gap.replace(/^Missing:\s*/i, '')}
+                    </div>
+                  )}
+                  {pathwayQ.ai_gap && !pathwayQ.ai_approval_gap && (
+                    <div className="bg-amber-50 border border-amber-200 text-amber-700 text-xs p-2 rounded">
+                      <span className="font-medium">Documentation gap:</span> {pathwayQ.ai_gap.replace(/^Missing:\s*/i, '')}
+                    </div>
+                  )}
+                  {pathwayQ.ai_reasoning && (
+                    <details className="text-xs text-gray-500">
+                      <summary className="cursor-pointer hover:text-gray-700">AI Reasoning</summary>
+                      <p className="mt-1 whitespace-pre-wrap">{pathwayQ.ai_reasoning}</p>
+                    </details>
+                  )}
+                </div>
+              );
+            })()}
           </div>
         )}
 
@@ -979,6 +1040,13 @@ export default function ReviewPage() {
               className="border border-amber-500 text-amber-600 px-3 py-1.5 rounded text-sm hover:bg-amber-50 disabled:opacity-50"
             >
               Flag
+            </button>
+            <button
+              onClick={handleSendToHold}
+              disabled={submitting}
+              className="px-3 py-1.5 rounded text-sm text-white bg-orange-600 hover:bg-orange-700 disabled:opacity-50"
+            >
+              On Hold
             </button>
             {/* L2 Re-Run button — opens confirmation modal */}
             {level === 2 && (

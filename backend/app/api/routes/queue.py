@@ -553,6 +553,43 @@ async def flag_case(
     return {"status": "flagged"}
 
 
+@router.post("/{case_id}/send-to-hold")
+async def send_to_hold(
+    case_id: str,
+    body: FlagRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Rep sends case to HOLD — clears questions/answers for a fresh start.
+
+    Used when patient data needs correction (wrong ICD, missing info, etc.).
+    Different from Re-Run: this drops everything and moves case to HOLD.
+    """
+    case = await repo.get_case(db, case_id)
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    if case.state not in (CaseState.L1_REVIEW, CaseState.L2_REVIEW):
+        raise HTTPException(status_code=400, detail=f"Case not in review (state={case.state.value})")
+
+    # Delete all questions — fresh start when case is requeued
+    all_questions = await repo.get_questions_for_case(db, case_id)
+    for q in all_questions:
+        await db.delete(q)
+
+    case.state = CaseState.HOLD
+    case.hold_reason = body.reason or "Sent to hold by rep"
+
+    await repo.create_audit_event(
+        db, case_id=case_id,
+        actor=f"rep:{body.rep_id}",
+        action="sent_to_hold",
+        data={"reason": body.reason},
+    )
+    await db.commit()
+
+    logger.info(f"Case {case_id} sent to HOLD by {body.rep_id}: {body.reason}")
+    return {"status": "hold", "reason": case.hold_reason}
+
+
 # --- Internal Helpers ---
 
 
