@@ -100,6 +100,7 @@ class PortalCompiler:
                 phase_result = await self._run_api_sequence(
                     phase, case, session, context_vars, clinical_flow,
                     resume_answers=resume_answers,
+                    clinical_context=clinical_context,
                 )
             elif phase.type == "WEBFORM":
                 phase_result = await self._run_webform(
@@ -169,6 +170,7 @@ class PortalCompiler:
         context_vars: dict,
         clinical_flow: ClinicalExamFlow,
         resume_answers: list[dict] | None = None,
+        clinical_context: dict | None = None,
     ) -> dict:
         """Delegate API_SEQUENCE phases to ClinicalExamFlow.
 
