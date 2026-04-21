@@ -127,37 +127,91 @@ export default function CaseDetailPage() {
         </div>
       </div>
 
-      {/* Auth Result */}
-      {caseData.auth_number && (
-        <div className="bg-green-50 border border-green-200 rounded p-4 flex items-center justify-between">
-          <div>
-            <p className="font-semibold text-green-700">
-              Approved — Auth #: {caseData.auth_number}
-            </p>
-            {caseData.valid_from && caseData.valid_through && (
-              <p className="text-sm text-green-600">
-                Valid: {caseData.valid_from} – {caseData.valid_through}
-              </p>
+      {/* Auth Result — state-aware rendering. Portal returns an order_id
+          for APPROVED, PENDED, and DENIED outcomes, so auth_number alone
+          is NOT sufficient to call a case "Approved". */}
+      {caseData.auth_number && (() => {
+        const isApproved = caseData.state === "APPROVED";
+        const isPended = caseData.state === "PENDED" || caseData.state === "PENDED_FAX_REVIEW";
+        const isDenied = caseData.state === "DENIED";
+        const boxClass = isApproved
+          ? "bg-green-50 border-green-200"
+          : isPended
+          ? "bg-amber-50 border-amber-200"
+          : isDenied
+          ? "bg-red-50 border-red-200"
+          : "bg-gray-50 border-gray-200";
+        const titleColor = isApproved
+          ? "text-green-700"
+          : isPended
+          ? "text-amber-700"
+          : isDenied
+          ? "text-red-700"
+          : "text-gray-700";
+        const subColor = isApproved
+          ? "text-green-600"
+          : isPended
+          ? "text-amber-600"
+          : isDenied
+          ? "text-red-600"
+          : "text-gray-600";
+        const btnClass = isApproved
+          ? "bg-green-600 hover:bg-green-700"
+          : isPended
+          ? "bg-amber-600 hover:bg-amber-700"
+          : isDenied
+          ? "bg-red-600 hover:bg-red-700"
+          : "bg-gray-600 hover:bg-gray-700";
+        const title = isApproved
+          ? `Approved — Auth #: ${caseData.auth_number}`
+          : isPended
+          ? `In Progress — Order #: ${caseData.auth_number}`
+          : isDenied
+          ? `Denied — Order #: ${caseData.auth_number}`
+          : `Auth #: ${caseData.auth_number}`;
+        return (
+          <div className={`rounded p-4 flex items-center justify-between border ${boxClass}`}>
+            <div>
+              <p className={`font-semibold ${titleColor}`}>{title}</p>
+              {isApproved && caseData.valid_from && caseData.valid_through && (
+                <p className={`text-sm ${subColor}`}>
+                  Valid: {caseData.valid_from} – {caseData.valid_through}
+                </p>
+              )}
+              {isPended && caseData.valid_from && (
+                <p className={`text-sm ${subColor}`}>
+                  Determination date: {caseData.valid_from}
+                </p>
+              )}
+              {isPended && caseData.pend_reason && (
+                <p className={`text-sm ${subColor}`}>Status: {caseData.pend_reason}</p>
+              )}
+              {isDenied && caseData.denial_reason && (
+                <p className={`text-sm ${subColor}`}>Reason: {caseData.denial_reason}</p>
+              )}
+            </div>
+            {caseData.auth_pdf_url && (
+              <a
+                href={`${process.env.NEXT_PUBLIC_API_URL || ""}/api/cases/${caseData.id}/auth-pdf`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={`px-3 py-1.5 text-white text-sm rounded ${btnClass}`}
+              >
+                View {isApproved ? "Auth" : "Portal"} Confirmation
+              </a>
             )}
           </div>
-          {caseData.auth_pdf_url && (
-            <a
-              href={`${process.env.NEXT_PUBLIC_API_URL || ""}/api/cases/${caseData.id}/auth-pdf`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="px-3 py-1.5 bg-green-600 text-white text-sm rounded hover:bg-green-700"
-            >
-              View Auth Confirmation
-            </a>
-          )}
-        </div>
-      )}
+        );
+      })()}
 
-      {/* Auth Confirmation Screenshot */}
+      {/* Confirmation Screenshot — label matches actual outcome */}
       {caseData.auth_pdf_url && caseData.auth_number && (
         <div className="border rounded-lg overflow-hidden bg-gray-50">
           <p className="text-xs text-gray-500 px-3 py-2 border-b bg-white font-medium">
-            Portal Auth Confirmation
+            {caseData.state === "APPROVED" ? "Portal Auth Confirmation" :
+             caseData.state === "PENDED" || caseData.state === "PENDED_FAX_REVIEW" ? "Portal Submission (In Progress)" :
+             caseData.state === "DENIED" ? "Portal Submission (Denied)" :
+             "Portal Confirmation"}
           </p>
           <img
             src={`${process.env.NEXT_PUBLIC_API_URL || ""}/api/cases/${caseData.id}/auth-pdf`}

@@ -400,8 +400,10 @@ async def requeue_case(case_id: str, db: AsyncSession = Depends(get_db)):
     # would create a new invocation with empty event → worker_id KeyError)
     await purge_case_workflow(case_id, workflows=("CaseWorkflow",))
 
-    # Reset case state
-    case.state = CaseState.NOTES_UPLOADED
+    # Reset case state — requeue = already processed, show as In Progress
+    # (skip the "Has Clinicals"/"Orders" bucket bounce). Worker claim
+    # filter accepts PROCESSING for every job type.
+    case.state = CaseState.PROCESSING
     case.hold_reason = None
 
     # Reset the submission job
@@ -424,7 +426,7 @@ async def requeue_case(case_id: str, db: AsyncSession = Depends(get_db)):
     )
 
     await db.commit()
-    return {"case_id": case_id, "state": "NOTES_UPLOADED", "message": "Case requeued"}
+    return {"case_id": case_id, "state": "PROCESSING", "message": "Case requeued"}
 
 
 @router.patch("/{case_id}/cure")
@@ -474,9 +476,10 @@ async def cure_and_requeue(
     # would create a new invocation with empty event → worker_id KeyError)
     await purge_case_workflow(case_id, workflows=("CaseWorkflow",))
 
-    # Reset state and job
+    # Reset state and job — cure-and-requeue = already processed, show as
+    # In Progress (skip "Has Clinicals"/"Orders" bucket bounce).
     old_reason = case.hold_reason
-    case.state = CaseState.NOTES_UPLOADED
+    case.state = CaseState.PROCESSING
     case.hold_reason = None
 
     from app.db.models import SubmissionJob, JobStatus
@@ -504,7 +507,7 @@ async def cure_and_requeue(
     await db.commit()
     return {
         "case_id": case_id,
-        "state": "NOTES_UPLOADED",
+        "state": "PROCESSING",
         "fields_updated": applied,
         "message": "Case cured and requeued",
     }

@@ -116,10 +116,24 @@ async def _run_submit(ctx: WorkflowContext, case_id: str, event: dict) -> dict:
         return {"status": "hold", "error": str(e)}
 
     # ── Handle result ──
-    if result.get("status") == "hold":
-        hold_reason = result.get("hold_reason", "Unknown finalize error")
-        # mark_case_hold already called by http_server.py
-        logger.warning(f"SubmitWorkflow/{case_id}: finalize → HOLD: {hold_reason}")
+    status = result.get("status")
+    if status in ("hold", "error"):
+        hold_reason = (
+            result.get("hold_reason")
+            or result.get("error")
+            or "Unknown finalize error"
+        )
+        if status == "error":
+            # http_server's exception handler returns status=error WITHOUT
+            # calling mark_case_hold. If we fall through, _complete_submit_job
+            # marks the job COMPLETED while case.state stays at SUBMITTING —
+            # a zombie that no worker reclaims (Brian Conner 17322971).
+            # Force HOLD so the case surfaces on the Worklist.
+            await ctx.run(
+                "mark_hold_finalize_error", _mark_case_hold,
+                max_attempts=3, args=(case_id, f"Finalize error: {hold_reason[:200]}"),
+            )
+        logger.warning(f"SubmitWorkflow/{case_id}: finalize → {status.upper()}: {hold_reason}")
         return result
 
     # ── Mark job complete ──

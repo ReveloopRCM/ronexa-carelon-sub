@@ -385,8 +385,12 @@ async def rerun_l2(
         },
     )
 
-    # Reset case to NOTES_UPLOADED so WorkerLoop can claim it for fresh first pass
-    case.state = CaseState.NOTES_UPLOADED
+    # Rerun = the case has already been through the pipeline. Skip the
+    # "Has Clinicals"/"Orders" bucket bounce and go straight to PROCESSING
+    # so the case shows in the "In Progress" bucket for the rep. Worker
+    # claim filter accepts PROCESSING for every job type (db/queue.py),
+    # and reap_stale_processing (15 min) is a safety net if no worker claims.
+    case.state = CaseState.PROCESSING
     await db.commit()
 
     # Reset job for fresh first pass
@@ -1146,14 +1150,13 @@ async def reject_no_auth(
             400, f"Case is in {case.state}, expected L1_REVIEW"
         )
 
-    # Resume state + job type depend on whether the case has clinical notes:
-    #   - clinical_blob_key set → NOTES_UPLOADED + FIRST_PASS (CaseWorkflow)
-    #   - order-only (no clinical) → ORDER_READY + ORDER (OrderWorkflow)
-    # Note: CaseState.QUEUED does not exist — an earlier version of this
-    # function used it and silently 500'd for every order-only NO_AUTH
-    # reject.
+    # Reject = the case has already been through the pipeline. Skip the
+    # "Has Clinicals"/"Orders" bucket bounce and go straight to PROCESSING
+    # so the case shows in the "In Progress" bucket for the rep. Worker
+    # claim filter accepts PROCESSING for every job type (db/queue.py).
+    # Job type is still set correctly below so the right workflow dispatches.
     is_order_only = not case.clinical_blob_key
-    case.state = CaseState.ORDER_READY if is_order_only else CaseState.NOTES_UPLOADED
+    case.state = CaseState.PROCESSING
     case.hold_reason = None
 
     # Reset job for reprocessing — fresh attempt, cleared exception state
