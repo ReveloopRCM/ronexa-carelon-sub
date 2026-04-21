@@ -93,7 +93,11 @@ async def process_case(event: dict) -> dict:
             case=case_data,
             session=session,
             clinical_context=clinical_context,
-            dry_run=False,
+            dry_run=True,   # First pass: never click "Submit This Request".
+                            # Auto-approved (0 questions) cases would otherwise
+                            # fall through the review gate and submit at the
+                            # portal before rep approval. SubmitWorkflow runs
+                            # finalize-case with dry_run=False to actually submit.
             resume_answers=rerun_rep_answers,
             changed_group_id=rerun_changed_group_id,
             order_mode=order_mode,
