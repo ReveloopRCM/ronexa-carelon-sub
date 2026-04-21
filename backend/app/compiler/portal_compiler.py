@@ -604,6 +604,11 @@ class PortalCompiler:
 
         elif phase_id == "check_existing_auths":
             r = await wf.extract_existing_auths()
+            if not r["ok"]:
+                # Extraction failed loudly (e.g. auths page rendered but Next
+                # button never appeared). Don't silently continue — HOLD so
+                # the case surfaces on the Worklist for rep triage.
+                return {"case_state": "HOLD", "hold_reason": r["message"]}
             auths_data = r.get("data", {})
 
             # Portal says no auth required for this member/procedure

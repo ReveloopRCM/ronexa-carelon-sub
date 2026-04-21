@@ -664,20 +664,52 @@ class WebFormsClient:
             logger.info("Portal skipped auths page — already on provider search")
             return _ok({"auths": [], "count": 0, "skipped": True, "already_on_provider": True})
 
-        # Wait for Next button (auths page indicator)
+        # Wait for Next button (auths page indicator).
+        # Paginated grids (patients with many prior auths — e.g. Nina Castillo
+        # with 28 records across 3 pages) take longer to fully render, so
+        # give the button up to 45s to appear.
         try:
-            await self.page.wait_for_selector(SEL["next_button"], timeout=15000)
+            await self.page.wait_for_selector(SEL["next_button"], timeout=45000)
         except Exception:
             # Still not on auths page — check provider page one more time
             is_provider_page = await self.page.query_selector(SEL["prov_search_type_tin_npi"])
             if is_provider_page:
                 logger.info("Portal skipped auths — on provider search after wait")
                 return _ok({"auths": [], "count": 0, "skipped": True, "already_on_provider": True})
-            logger.warning(f"Auths page not detected — page text: {page_text[:200]}")
+
+            # Re-read page text — we may be on a paginated auths page with
+            # many records where the Next button didn't materialize in time.
+            # If we detect the auths page markers, HOLD instead of silently
+            # skipping (the old behavior caused the downstream provider_search
+            # phase to fail with "Provider search page did not load").
+            current_text = ""
+            try:
+                current_text = await self.page.evaluate(
+                    "() => document.body.innerText.substring(0, 1000)"
+                )
+            except Exception:
+                pass
+
             try:
                 await self.page.screenshot(path="/tmp/ronexa_unknown_page_after_start.png")
             except Exception:
                 pass
+
+            is_auths_page = (
+                "Member History" in current_text
+                or "Records Found" in current_text
+                or ("Order Request" in current_text and "duplicate" in current_text.lower())
+            )
+            if is_auths_page:
+                logger.warning(
+                    "On auths page but Next button didn't appear within 45s — HOLD"
+                )
+                return _fail(
+                    "Existing auths page rendered but Next button not clickable within timeout. "
+                    "Patient may have a large auth history requiring manual navigation."
+                )
+
+            logger.warning(f"Auths page not detected — page text: {current_text[:200]}")
             return _ok({"auths": [], "count": 0, "skipped": True})
 
         has_existing = await self.reader.has_results("exams")
