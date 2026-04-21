@@ -855,6 +855,23 @@ class PortalCompiler:
         result: dict[str, Any] = {}
         delete_endpoint = phase.delete_endpoint
 
+        # ---- Pathway-change rerun: treat as fresh first pass ----
+        # The clinical scenario (pathway) is not part of the clinical-questions
+        # backtrack model. It's a case-level setup parameter that changes the
+        # entire downstream question tree. When the rep picks a new pathway:
+        #   - The clinical_pathway phase already consumed the rep's pathway_id
+        #   - The portal now returns a fresh set of questions for that pathway
+        #   - Old clinical answers (groups 1+) belong to the OLD pathway — discard
+        # So run the loop as if it were a first pass: resume_answers=None,
+        # changed_group_id=None → LLM answers all new questions fresh.
+        if changed_group_id == 0:
+            logger.info(
+                "Pathway change rerun — treating as fresh first pass on clinical "
+                "questions (discarding stale resume_answers)"
+            )
+            resume_answers = None
+            changed_group_id = None
+
         # ---- Resume path: fast-forward or backtrack with approved answers ----
         new_questions_from_backtrack = None  # Set if backtrack produces new questions
 
