@@ -1141,26 +1141,38 @@ async def reject_no_auth(
     case = await repo.get_case(db, case_id)
     if not case:
         raise HTTPException(404, "Case not found")
-    if case.state not in (CaseState.L1_REVIEW):
+    if case.state not in (CaseState.L1_REVIEW,):
         raise HTTPException(
             400, f"Case is in {case.state}, expected L1_REVIEW"
         )
 
-    case.state = CaseState.NOTES_UPLOADED if case.clinical_blob_key else CaseState.QUEUED
+    # Resume state + job type depend on whether the case has clinical notes:
+    #   - clinical_blob_key set → NOTES_UPLOADED + FIRST_PASS (CaseWorkflow)
+    #   - order-only (no clinical) → ORDER_READY + ORDER (OrderWorkflow)
+    # Note: CaseState.QUEUED does not exist — an earlier version of this
+    # function used it and silently 500'd for every order-only NO_AUTH
+    # reject.
+    is_order_only = not case.clinical_blob_key
+    case.state = CaseState.ORDER_READY if is_order_only else CaseState.NOTES_UPLOADED
     case.hold_reason = None
 
-    # Reset job for reprocessing
+    # Reset job for reprocessing — fresh attempt, cleared exception state
     from sqlalchemy import update
-    from app.db.models import JobStatus
+    from app.db.models import JobStatus, JobType
+
+    new_job_type = JobType.ORDER if is_order_only else JobType.FIRST_PASS
 
     await db.execute(
         update(SubmissionJob)
         .where(SubmissionJob.case_id == case_id)
         .values(
             status=JobStatus.QUEUED,
-            job_type="FIRST_PASS",
+            job_type=new_job_type,
             claimed_by=None,
             claimed_at=None,
+            attempt=0,
+            exception_type=None,
+            exception_detail=None,
         )
     )
 
