@@ -332,9 +332,20 @@ async def mark_case_complete(case_id: str, result: dict) -> None:
     """Mark a case as completed after submission."""
     from app.db.database import async_session_factory
     from app.db import repositories as repo
-    from app.db.models import CaseState
+    from app.db.models import CaseState, ExceptionType
     from sqlalchemy import update
     from app.db.models import SubmissionJob, JobStatus
+
+    # Detect "empty submission result" — the silent-failure path where the
+    # portal returned no order_id, no pend reason, and no denial reason.
+    # Historically we silently marked these PENDED (creating ghost cases like
+    # Jakob Buhrkuhl 17313436 — state=PENDED in Ronexa but no case in Carelon).
+    # Now we HOLD them so a rep can verify and re-submit if needed.
+    submission_empty = (
+        not result.get("auth_number")
+        and not result.get("denial_reason")
+        and not result.get("pend_reason")
+    )
 
     async with async_session_factory() as db:
         case = await repo.get_case(db, case_id)
@@ -353,7 +364,17 @@ async def mark_case_complete(case_id: str, result: dict) -> None:
             elif auth_number:
                 case.state = CaseState.APPROVED
             else:
-                case.state = CaseState.PENDED
+                # No auth, no explicit pend, no denial — submit_and_extract
+                # completed without error but didn't capture a confirmation
+                # (portal may have intercepted at duplicate-auth check, shown
+                # an interstitial, or redirected to an unrecognized page).
+                # Don't silently mark PENDED; HOLD for rep verification.
+                case.state = CaseState.HOLD
+                case.hold_reason = (
+                    "Submission completed but no confirmation captured "
+                    "(no auth number, no pend/denial reason). "
+                    "Verify in Carelon portal before re-submitting."
+                )
 
             # Persist all portal extraction fields
             if result.get("portal_case_id"):
@@ -388,11 +409,28 @@ async def mark_case_complete(case_id: str, result: dict) -> None:
             from datetime import datetime as dt
             case.submitted_at = dt.utcnow()
 
-        await db.execute(
-            update(SubmissionJob).where(
-                SubmissionJob.case_id == case_id
-            ).values(status=JobStatus.COMPLETED)
-        )
+        # If submission result was empty, surface the job on the Worklist as
+        # a PORTAL_ERROR exception rather than silently marking it COMPLETED.
+        if submission_empty:
+            await db.execute(
+                update(SubmissionJob).where(
+                    SubmissionJob.case_id == case_id
+                ).values(
+                    status=JobStatus.FAILED,
+                    exception_type=ExceptionType.PORTAL_ERROR,
+                    exception_detail=(
+                        "Submission completed but no confirmation captured "
+                        "(no auth number, no pend/denial reason). "
+                        "Verify in Carelon portal before re-submitting."
+                    ),
+                )
+            )
+        else:
+            await db.execute(
+                update(SubmissionJob).where(
+                    SubmissionJob.case_id == case_id
+                ).values(status=JobStatus.COMPLETED)
+            )
 
         await repo.create_audit_event(
             db, case_id=case_id, actor="system",
