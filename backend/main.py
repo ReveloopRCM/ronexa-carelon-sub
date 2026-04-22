@@ -5,7 +5,7 @@ import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import analytics, auth, cases, executions, jobs, queue, sessions, settings as settings_routes, signatures, sync, uploads
+from app.api.routes import analytics, auth, availity, cases, executions, jobs, queue, sessions, settings as settings_routes, signatures, sync, uploads
 from app.core.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -69,6 +69,7 @@ from app.api.routes.auth import require_auth
 protected = [
     uploads.router,
     analytics.router,
+    availity.router,
     cases.router,
     executions.router,
     queue.router,

@@ -71,6 +71,13 @@ class Settings(BaseSettings):
     RC_JWT_TOKEN: str = ""
     RC_SERVER_URL: str = "https://platform.ringcentral.com"
 
+    # Availity Eligibility API (external; queries coverage + auth_org_name
+    # for Member Not Found cases). Credentials can also be set in DB via
+    # Settings → Integrations → Availity.
+    AVAILITY_BASE_URL: str = "https://api-v2.ronexa.com"
+    AVAILITY_USERNAME: str = ""
+    AVAILITY_PASSWORD: str = ""
+
     # Authentication
     RONEXA_API_URL: str = "https://api-v2.ronexa.com"
     ADMIN_USERNAME: str = "admin"

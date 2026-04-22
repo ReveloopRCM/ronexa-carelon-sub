@@ -32,6 +32,7 @@ export default function NavBar() {
     { href: "/cases", label: "Cases" },
     { href: "/queue", label: "Review" },
     { href: "/awaiting-clinicals", label: "Awaiting Clinicals" },
+    { href: "/availity", label: "Availity" },
     { href: "/executions", label: "Executions" },
     { href: "/analytics", label: "Analytics" },
   ];

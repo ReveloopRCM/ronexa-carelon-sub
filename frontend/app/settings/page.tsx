@@ -12,6 +12,9 @@ import {
   getRcSettings,
   updateRcSettings,
   testRcConnection,
+  getAvailitySettings,
+  updateAvailitySettings,
+  testAvailityConnection,
   getSignatureStats,
   scanSignatures,
 } from "@/lib/api";
@@ -48,6 +51,17 @@ export default function SettingsPage() {
   const [rcTesting, setRcTesting] = useState(false);
   const [rcSaving, setRcSaving] = useState(false);
 
+  // Availity state
+  const [availitySettings, setAvailitySettings] = useState<Record<string, any>>({
+    availity_base_url: "https://api-v2.ronexa.com",
+    availity_username: "",
+    availity_password: "",
+    availity_auto_send_enabled: false,
+    availity_auto_send_interval_minutes: 30,
+  });
+  const [availityTesting, setAvailityTesting] = useState(false);
+  const [availitySaving, setAvailitySaving] = useState(false);
+
   // Awaiting Clinicals / Signature Replay state
   const [sigStats, setSigStats] = useState<any>(null);
   const [sigScanning, setSigScanning] = useState(false);
@@ -74,12 +88,13 @@ export default function SettingsPage() {
   const refresh = async () => {
     try {
       const { listBypassRules, listWorkerAccounts } = await import("@/lib/api");
-      const [s, h, rules, workers, rc] = await Promise.all([
+      const [s, h, rules, workers, rc, av] = await Promise.all([
         getSettings(),
         getSyncHistory(),
         listBypassRules().catch(() => []),
         listWorkerAccounts().catch(() => []),
         getRcSettings().catch(() => null),
+        getAvailitySettings().catch(() => null),
       ]);
       setSettings(s);
       setHistory(h);
@@ -87,6 +102,9 @@ export default function SettingsPage() {
       setWorkerAccounts(workers);
       if (rc) {
         setRcSettings((prev) => ({ ...prev, ...rc }));
+      }
+      if (av) {
+        setAvailitySettings((prev) => ({ ...prev, ...av }));
       }
     } catch {
       // API not running
@@ -197,6 +215,34 @@ export default function SettingsPage() {
       showMessage(`Save failed: ${err.message}`, "error");
     } finally {
       setRcSaving(false);
+    }
+  };
+
+  const handleTestAvailityConnection = async () => {
+    setAvailityTesting(true);
+    try {
+      const result = await testAvailityConnection();
+      if (result.ok) {
+        showMessage(result.message || "Availity connection successful", "success");
+      } else {
+        showMessage(result.error || "Availity connection failed", "error");
+      }
+    } catch (err: any) {
+      showMessage(`Connection test failed: ${err.message}`, "error");
+    } finally {
+      setAvailityTesting(false);
+    }
+  };
+
+  const handleSaveAvailitySettings = async () => {
+    setAvailitySaving(true);
+    try {
+      await updateAvailitySettings(availitySettings);
+      showMessage("Availity settings saved", "success");
+    } catch (err: any) {
+      showMessage(`Save failed: ${err.message}`, "error");
+    } finally {
+      setAvailitySaving(false);
     }
   };
 
@@ -1428,6 +1474,135 @@ export default function SettingsPage() {
                   className="px-4 py-2 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:opacity-50"
                 >
                   {rcSaving ? "Saving..." : "Save"}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* ─── Availity Eligibility ─── */}
+          <div className="border rounded-lg p-5 space-y-4">
+            <h2 className="font-semibold text-lg">Availity Eligibility</h2>
+            <p className="text-xs text-gray-400">
+              Used to resolve MEMBER_NOT_FOUND cases. Queries coverage + auth_org_name
+              via the Ronexa-hosted Availity proxy API.
+            </p>
+
+            <div className="space-y-4 max-w-xl">
+              {/* Auto-send toggle */}
+              <div className="flex items-center justify-between">
+                <label className="text-sm font-medium">
+                  Auto-send MEMBER_NOT_FOUND cases
+                </label>
+                <button
+                  onClick={() =>
+                    setAvailitySettings((prev) => ({
+                      ...prev,
+                      availity_auto_send_enabled: !prev.availity_auto_send_enabled,
+                    }))
+                  }
+                  className={`px-3 py-1 rounded text-sm font-medium transition ${
+                    availitySettings.availity_auto_send_enabled
+                      ? "bg-green-100 text-green-700"
+                      : "bg-gray-100 text-gray-500"
+                  }`}
+                >
+                  {availitySettings.availity_auto_send_enabled ? "ON" : "OFF"}
+                </button>
+              </div>
+
+              {/* Interval (only when auto-send is on) */}
+              {availitySettings.availity_auto_send_enabled && (
+                <div className="space-y-1">
+                  <label className="text-sm text-gray-600">
+                    Auto-send interval (minutes, min 30)
+                  </label>
+                  <input
+                    type="number"
+                    min={30}
+                    value={availitySettings.availity_auto_send_interval_minutes || 30}
+                    onChange={(e) =>
+                      setAvailitySettings((prev) => ({
+                        ...prev,
+                        availity_auto_send_interval_minutes: Math.max(
+                          30,
+                          parseInt(e.target.value, 10) || 30
+                        ),
+                      }))
+                    }
+                    className="w-full border rounded px-3 py-2 text-sm font-mono"
+                  />
+                  <p className="text-[11px] text-gray-400">
+                    Not yet wired — toggle is stored but scheduled runs are Phase 2.
+                  </p>
+                </div>
+              )}
+
+              {/* Username */}
+              <div className="space-y-1">
+                <label className="text-sm text-gray-600">Username</label>
+                <input
+                  type="text"
+                  value={availitySettings.availity_username || ""}
+                  onChange={(e) =>
+                    setAvailitySettings((prev) => ({
+                      ...prev,
+                      availity_username: e.target.value,
+                    }))
+                  }
+                  className="w-full border rounded px-3 py-2 text-sm font-mono"
+                  placeholder="Availity login username"
+                />
+              </div>
+
+              {/* Password */}
+              <div className="space-y-1">
+                <label className="text-sm text-gray-600">Password</label>
+                <input
+                  type="password"
+                  value={availitySettings.availity_password || ""}
+                  onChange={(e) =>
+                    setAvailitySettings((prev) => ({
+                      ...prev,
+                      availity_password: e.target.value,
+                    }))
+                  }
+                  className="w-full border rounded px-3 py-2 text-sm font-mono"
+                  placeholder="Availity login password"
+                />
+              </div>
+
+              {/* Base URL */}
+              <div className="space-y-1">
+                <label className="text-sm text-gray-600">Base URL</label>
+                <input
+                  type="text"
+                  value={availitySettings.availity_base_url || "https://api-v2.ronexa.com"}
+                  onChange={(e) =>
+                    setAvailitySettings((prev) => ({
+                      ...prev,
+                      availity_base_url: e.target.value,
+                    }))
+                  }
+                  className="w-full border rounded px-3 py-2 text-sm font-mono"
+                  placeholder="https://api-v2.ronexa.com"
+                />
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex gap-2 pt-2">
+                <button
+                  onClick={handleTestAvailityConnection}
+                  disabled={availityTesting}
+                  className="px-4 py-2 bg-gray-600 text-white rounded text-sm hover:bg-gray-700 disabled:opacity-50"
+                >
+                  {availityTesting ? "Testing..." : "Test Connection"}
+                </button>
+                <button
+                  onClick={handleSaveAvailitySettings}
+                  disabled={availitySaving}
+                  className="px-4 py-2 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {availitySaving ? "Saving..." : "Save"}
                 </button>
               </div>
             </div>

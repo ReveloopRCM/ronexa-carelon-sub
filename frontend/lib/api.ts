@@ -499,6 +499,56 @@ export async function testRcConnection() {
   });
 }
 
+// Availity Integration
+export async function listAvailityJobs(params?: {
+  status?: string;
+  page?: number;
+  page_size?: number;
+}) {
+  const qs = new URLSearchParams();
+  if (params?.status) qs.set("status", params.status);
+  if (params?.page) qs.set("page", String(params.page));
+  if (params?.page_size) qs.set("page_size", String(params.page_size));
+  const suffix = qs.toString() ? `?${qs}` : "";
+  return apiFetch<any>(`/availity/jobs${suffix}`);
+}
+
+export async function getAvailityJob(jobId: string) {
+  return apiFetch<any>(`/availity/jobs/${jobId}`);
+}
+
+export async function deleteAvailityJob(jobId: string) {
+  return apiFetch<any>(`/availity/jobs/${jobId}`, { method: "DELETE" });
+}
+
+export async function sendMemberNotFoundToAvaility() {
+  return apiFetch<any>(`/availity/send-member-not-found`, { method: "POST" });
+}
+
+export async function getMemberNotFoundCount() {
+  return apiFetch<{ total: number; ready_to_send: number; skipped_incomplete: number }>(
+    `/availity/member-not-found-count`
+  );
+}
+
+export async function getAvailitySettings() {
+  return apiFetch<any>(`/availity/settings`);
+}
+
+export async function updateAvailitySettings(data: Record<string, any>) {
+  return apiFetch<any>(`/availity/settings`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function testAvailityConnection() {
+  return apiFetch<{ ok: boolean; message?: string; error?: string }>(
+    `/availity/test-connection`,
+    { method: "POST" }
+  );
+}
+
 // Authentication
 export async function login(username: string, password: string) {
   const res = await fetch(`${API_BASE}/auth/proxy-login`, {
