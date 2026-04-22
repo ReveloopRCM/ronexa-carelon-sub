@@ -28,8 +28,15 @@ anthropic>=0.42.0
 # Embeddings
 openai>=1.58.0
 
-# Gemini failover
+# Gemini failover — legacy SDK kept for backward compat with any old code paths
 google-generativeai>=0.8.0
+
+# New Google SDK — evaluator uses `from google import genai`, and RAG
+# embeddings call `client.aio.models.embed_content`. Worker VMs already
+# pip-installed this manually; adding it here makes the backend-api
+# Docker image (used by the reembed backfill script and any future
+# embed-from-orchestrator paths) match.
+google-genai>=1.0.0
 
 # Restate
 restate-sdk>=0.16.0
