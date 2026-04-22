@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { listQueue } from "@/lib/api";
+import { getVerdict } from "@/lib/verdict";
 
 type TabLevel = 1 | 2 | "fax";
 
@@ -144,35 +145,25 @@ export default function QueuePage() {
                       STAT
                     </span>
                   )}
-                  {c.approval_type === "no_auth" && (
-                    <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-sky-100 text-sky-700">
-                      No Auth Required
-                    </span>
-                  )}
-                  {c.gold_card_level != null && (
+                  {/* Numeric gold-card level stays as an always-visible info chip */}
+                  {c.gold_card_level != null && c.gold_card_level > 0 && (
                     <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
                       c.gold_card_level >= 2 ? "bg-yellow-100 text-yellow-700" :
-                      c.gold_card_level === 1 ? "bg-blue-100 text-blue-700" :
-                      "bg-gray-100 text-gray-500"
+                      "bg-blue-100 text-blue-700"
                     }`}>
                       GC:{c.gold_card_level}
                     </span>
                   )}
-                  {c.auto_approved === true && (c.approval_type === "gold_card" || c.approval_type === "auto_approved") && (
-                    <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-purple-100 text-purple-700">
-                      Auto Approve
-                    </span>
-                  )}
-                  {c.auto_approved === true && c.approval_type === "algorithm" && (
-                    <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-green-100 text-green-700">
-                      Algorithm Approved
-                    </span>
-                  )}
-                  {c.auto_approved === false && !c.approval_type && (
-                    <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-amber-100 text-amber-700">
-                      Pend
-                    </span>
-                  )}
+                  {/* Single, data-driven verdict chip (replaces the five old inline badges) */}
+                  {(() => {
+                    const v = getVerdict(c);
+                    if (!v) return null;
+                    return (
+                      <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded-full font-medium ${v.chip}`}>
+                        {v.short}
+                      </span>
+                    );
+                  })()}
                   {c.state === "L2_REVIEW" && level === 2 && (
                     <span className="ml-2 bg-amber-100 text-amber-700 text-xs px-2 py-0.5 rounded">
                       L1 reviewed

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { confirmClinicalReview, confirmNoAuth, flagCase, getQueueItem, markAlreadyWorked, rejectClinicalReview, rejectNoAuth, resolveL1, resolveL2, rerunL2, sendToHold, submitBatchReview, updatePathway, validateFax } from "@/lib/api";
+import { getVerdict } from "@/lib/verdict";
 
 export default function ReviewPage() {
   const params = useParams();
@@ -386,32 +387,29 @@ export default function ReviewPage() {
         <div className="border rounded p-4 space-y-3">
           <h2 className="font-semibold">Case Summary</h2>
 
-          {/* Portal Verdict Banner — shows algorithm recommendation from clinical decision tree */}
-          {caseInfo.auto_approved !== undefined && caseInfo.auto_approved !== null && (
-            <div className={`rounded-md px-3 py-2 text-sm font-medium flex items-center gap-2 ${
-              caseInfo.auto_approved
-                ? "bg-green-50 border border-green-300 text-green-800"
-                : "bg-amber-50 border border-amber-300 text-amber-800"
-            }`}>
-              <span className="text-base">
-                {caseInfo.auto_approved ? "✓" : "⚠"}
-              </span>
-              <span>
-                {caseInfo.auto_approved
-                  ? "Algorithm Approved — Clinical Criteria Met"
-                  : "Algorithm Pend — Review Required"}
-                {caseInfo.gold_card_level != null && (
-                  <span className={`ml-2 text-xs px-1.5 py-0.5 rounded-full ${
-                    caseInfo.gold_card_level >= 2 ? "bg-yellow-100 text-yellow-700" :
-                    caseInfo.gold_card_level === 1 ? "bg-blue-100 text-blue-700" :
-                    "bg-gray-100 text-gray-500"
-                  }`}>
-                    GC:{caseInfo.gold_card_level}
-                  </span>
-                )}
-              </span>
-            </div>
-          )}
+          {/* Portal Verdict Banner — single source of truth in frontend/lib/verdict.ts.
+              algorithm_recommendation=6 is now "In Progress — Outcome Uncertain" (amber)
+              instead of the misleading red "Pend". */}
+          {(() => {
+            const v = getVerdict(caseInfo);
+            if (!v) return null;
+            return (
+              <div className={`rounded-md px-3 py-2 text-sm font-medium flex items-center gap-2 ${v.banner}`}>
+                <span className="text-base">{v.icon}</span>
+                <span>
+                  {v.label}
+                  {caseInfo.gold_card_level != null && caseInfo.gold_card_level > 0 && (
+                    <span className={`ml-2 text-xs px-1.5 py-0.5 rounded-full ${
+                      caseInfo.gold_card_level >= 2 ? "bg-yellow-100 text-yellow-700" :
+                      "bg-blue-100 text-blue-700"
+                    }`}>
+                      GC:{caseInfo.gold_card_level}
+                    </span>
+                  )}
+                </span>
+              </div>
+            );
+          })()}
 
           <div className="text-sm space-y-1">
             <p>
@@ -763,16 +761,15 @@ export default function ReviewPage() {
               <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded">
                 Signature Replay — Verify with Clinicals
               </span>
-              {caseInfo.auto_approved && (
-                <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">
-                  Algorithm Approved
-                </span>
-              )}
-              {(caseInfo.gold_card_level || 0) >= 2 && (
-                <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded">
-                  Gold Card
-                </span>
-              )}
+              {(() => {
+                const v = getVerdict(caseInfo);
+                if (!v) return null;
+                return (
+                  <span className={`text-xs px-2 py-0.5 rounded ${v.chip}`}>
+                    {v.label}
+                  </span>
+                );
+              })()}
             </div>
             <p className="text-xs text-gray-500">
               This case was processed via algorithm signature replay (no clinicals at time of processing).
