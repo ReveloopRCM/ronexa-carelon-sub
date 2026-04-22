@@ -910,26 +910,74 @@ export default function SettingsPage() {
 
                 <span className="text-gray-300 self-center text-xl flex-shrink-0">&rarr;</span>
 
-                {/* Node 4: RAG Embeddings */}
-                <div className="border-2 border-purple-200 rounded-lg p-4 flex-1 min-w-[150px] bg-purple-50/30">
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className={`w-2 h-2 rounded-full ${settings.api_key_openai ? "bg-green-500" : "bg-red-400"}`} />
-                    <h3 className="text-sm font-semibold">RAG Embeddings</h3>
-                  </div>
-                  <p className="text-xs text-gray-400 mb-3">Outcome patterns for similarity search</p>
-                  <div className="space-y-2">
-                    <label className="text-xs text-gray-500">Embedding Model</label>
-                    <select
-                      value={settings.llm_embed_model || "text-embedding-3-small"}
-                      onChange={(e) => handleUpdate("llm_embed_model", e.target.value)}
-                      className="w-full border rounded px-2 py-1 text-xs font-mono"
-                    >
-                      <option value="text-embedding-3-small">text-embedding-3-small</option>
-                      <option value="text-embedding-3-large">text-embedding-3-large</option>
-                      <option value="text-embedding-ada-002">text-embedding-ada-002</option>
-                    </select>
-                  </div>
-                </div>
+                {/* Node 4: RAG Embeddings — provider-configurable (Google default, OpenAI fallback) */}
+                {(() => {
+                  const embedProvider = settings.llm_embed_provider || "google";
+                  // API-key health light reflects the selected provider's key
+                  const keyPresent = embedProvider === "google"
+                    ? Boolean(settings.api_key_google)
+                    : embedProvider === "openai"
+                      ? Boolean(settings.api_key_openai)
+                      : false;
+                  const googleModels = [
+                    { val: "gemini-embedding-001", label: "gemini-embedding-001 (default)" },
+                    { val: "text-embedding-004",    label: "text-embedding-004 (legacy)" },
+                  ];
+                  const openaiModels = [
+                    { val: "text-embedding-3-small", label: "text-embedding-3-small (1536 dim)" },
+                    { val: "text-embedding-3-large", label: "text-embedding-3-large" },
+                    { val: "text-embedding-ada-002", label: "text-embedding-ada-002" },
+                  ];
+                  const models = embedProvider === "openai" ? openaiModels : googleModels;
+                  const currentModel = settings.llm_embed_model ||
+                    (embedProvider === "google" ? "gemini-embedding-001" : "text-embedding-3-small");
+                  // If the saved model doesn't match the selected provider's list,
+                  // snap to that provider's default on next save.
+                  const modelValid = models.some(m => m.val === currentModel);
+                  return (
+                    <div className="border-2 border-purple-200 rounded-lg p-4 flex-1 min-w-[180px] bg-purple-50/30">
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className={`w-2 h-2 rounded-full ${keyPresent ? "bg-green-500" : "bg-red-400"}`} />
+                        <h3 className="text-sm font-semibold">RAG Embeddings</h3>
+                      </div>
+                      <p className="text-xs text-gray-400 mb-3">Outcome patterns for similarity search</p>
+                      <div className="space-y-2">
+                        <label className="text-xs text-gray-500">Provider</label>
+                        <select
+                          value={embedProvider}
+                          onChange={(e) => {
+                            const next = e.target.value;
+                            handleUpdate("llm_embed_provider", next);
+                            // Also snap the model to that provider's default to avoid an invalid pair
+                            if (next === "google" && !googleModels.some(m => m.val === currentModel)) {
+                              handleUpdate("llm_embed_model", "gemini-embedding-001");
+                            } else if (next === "openai" && !openaiModels.some(m => m.val === currentModel)) {
+                              handleUpdate("llm_embed_model", "text-embedding-3-small");
+                            }
+                          }}
+                          className="w-full border rounded px-2 py-1 text-xs"
+                        >
+                          <option value="google">Google (Gemini)</option>
+                          <option value="openai">OpenAI</option>
+                        </select>
+                        <label className="text-xs text-gray-500 pt-1 block">Model</label>
+                        <select
+                          value={modelValid ? currentModel : models[0].val}
+                          onChange={(e) => handleUpdate("llm_embed_model", e.target.value)}
+                          className="w-full border rounded px-2 py-1 text-xs font-mono"
+                        >
+                          {models.map((m) => (
+                            <option key={m.val} value={m.val}>{m.label}</option>
+                          ))}
+                        </select>
+                        <p className="text-[10px] text-gray-400 pt-1">
+                          Uses 1536 dims (matches the Vector(1536) column).
+                          {embedProvider === "google" && " Gemini output reduced via output_dimensionality."}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             </div>
 
@@ -1071,9 +1119,9 @@ export default function SettingsPage() {
             <p className="text-xs text-gray-400">Encrypted at rest. Decrypted only at LLM call time.</p>
             <div className="space-y-3">
               {[
-                { key: "api_key_anthropic", label: "Anthropic", desc: "Used by Clinical Extraction + Pathway Q&A" },
-                { key: "api_key_google", label: "Google (Gemini)", desc: "Fallback provider for evaluation + extraction" },
-                { key: "api_key_openai", label: "OpenAI", desc: "Used by RAG Embeddings (text-embedding-3)" },
+                { key: "api_key_anthropic", label: "Anthropic", desc: "Clinical Extraction (Haiku vision) + fallback for Pathway Q&A" },
+                { key: "api_key_google", label: "Google (Gemini)", desc: "Primary for Pathway Q&A, Submission matching, and RAG Embeddings" },
+                { key: "api_key_openai", label: "OpenAI", desc: "Only needed if you switch RAG Embeddings to OpenAI" },
               ].map(({ key, label, desc }) => (
                 <div key={key} className="flex items-center gap-3 border-b pb-3 last:border-0 last:pb-0">
                   <div className="w-40">

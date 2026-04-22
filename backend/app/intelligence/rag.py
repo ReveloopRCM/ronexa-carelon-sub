@@ -2,38 +2,76 @@
 
 Day 1: empty table, returns nothing. LLM works without RAG examples.
 RAG enriches over time as outcomes accumulate.
+
+Embeddings are provider-agnostic: configured via `llm_embed_provider`
+and `llm_embed_model` in system_settings. Default is Google
+`gemini-embedding-001` at `output_dimensionality=1536` so the existing
+`outcome_patterns.question_embedding Vector(1536)` column stays valid.
+OpenAI is available as a fallback via the Settings UI.
 """
 from __future__ import annotations
 
 import logging
 
-from openai import AsyncOpenAI
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.settings import settings
 from app.db.models import OutcomePattern
 
 logger = logging.getLogger(__name__)
 
-_openai_client: AsyncOpenAI | None = None
-
-
-def _get_openai_client() -> AsyncOpenAI:
-    global _openai_client
-    if _openai_client is None:
-        _openai_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-    return _openai_client
+# Target dimension for stored embeddings. MUST match the Vector(...) dim
+# on outcome_patterns.question_embedding (currently 1536). If you ever
+# change the column, update this too and run a full backfill.
+EMBED_DIMS = 1536
 
 
 async def get_embedding(text_input: str) -> list[float]:
-    """Generate embedding using text-embedding-3-small (1536 dims)."""
-    client = _get_openai_client()
-    response = await client.embeddings.create(
-        model="text-embedding-3-small",
-        input=text_input,
-    )
-    return response.data[0].embedding
+    """Generate an embedding vector for `text_input`.
+
+    Provider + model resolved from system_settings via get_llm_config('embed').
+    Returns a list of floats of length EMBED_DIMS.
+    """
+    # Lazy import to avoid a circular import at module load
+    from app.intelligence.llm_config import get_llm_config
+
+    cfg = await get_llm_config("embed")
+    provider = cfg["provider"]
+    model = cfg["model"]
+    api_key = cfg["api_key"]
+
+    if not api_key:
+        raise RuntimeError(f"No API key configured for embedding provider '{provider}'")
+
+    if provider == "google":
+        from google import genai
+        from google.genai import types
+
+        client = genai.Client(api_key=api_key)
+        resp = await client.aio.models.embed_content(
+            model=model,
+            contents=text_input,
+            config=types.EmbedContentConfig(output_dimensionality=EMBED_DIMS),
+        )
+        # google-genai returns a list of ContentEmbedding objects
+        vec = list(resp.embeddings[0].values)
+    elif provider == "openai":
+        from openai import AsyncOpenAI
+
+        client = AsyncOpenAI(api_key=api_key)
+        resp = await client.embeddings.create(model=model, input=text_input)
+        vec = list(resp.data[0].embedding)
+    else:
+        raise RuntimeError(f"Unknown embedding provider: {provider}")
+
+    if len(vec) != EMBED_DIMS:
+        # Defensive: if a future model emits a different dimension, fail loud
+        # rather than writing a wrong-shape vector into the DB column.
+        raise RuntimeError(
+            f"Embedding from {provider}:{model} returned {len(vec)} dims, "
+            f"expected {EMBED_DIMS}"
+        )
+    return vec
 
 
 async def retrieve_similar_cases(

@@ -74,7 +74,11 @@ DEFAULTS = {
     "llm_eval_model": "gemini-2.5-pro",
     "llm_match_provider": "google",
     "llm_match_model": "gemini-2.5-flash",
-    "llm_embed_model": "text-embedding-3-small",
+    # RAG embeddings — Gemini with output_dimensionality=1536 so the
+    # existing outcome_patterns.question_embedding Vector(1536) column
+    # stays valid (no ALTER TABLE needed).
+    "llm_embed_provider": "google",
+    "llm_embed_model": "gemini-embedding-001",
 }
 
 API_KEY_SETTINGS = {
@@ -124,6 +128,8 @@ async def get_llm_config(role: str) -> dict:
             api_key = os.environ.get("ANTHROPIC_API_KEY", "") or getattr(env_settings, "ANTHROPIC_API_KEY", "")
         elif provider == "google":
             api_key = os.environ.get("GOOGLE_API_KEY", "") or getattr(env_settings, "GOOGLE_API_KEY", "")
+        elif provider == "openai":
+            api_key = os.environ.get("OPENAI_API_KEY", "") or getattr(env_settings, "OPENAI_API_KEY", "")
         else:
             api_key = ""
 
