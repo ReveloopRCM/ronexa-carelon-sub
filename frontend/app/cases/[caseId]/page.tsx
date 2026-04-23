@@ -221,6 +221,73 @@ export default function CaseDetailPage() {
         </div>
       )}
 
+      {/* Fax Delivery box — only shown once a fax has been approved. Reflects
+          the status poller's latest read: Queued → Sent/SendingFailed/Timeout. */}
+      {caseData.fax_message_id && (() => {
+        const fs: string = caseData.fax_status || "Queued";
+        const isSent = fs === "Sent";
+        const isFailed = fs === "SendingFailed" || fs === "Failed" || fs === "Timeout";
+        const boxClass = isSent
+          ? "bg-green-50 border-green-200"
+          : isFailed
+          ? "bg-red-50 border-red-200"
+          : "bg-amber-50 border-amber-200";
+        const titleColor = isSent
+          ? "text-green-700"
+          : isFailed
+          ? "text-red-700"
+          : "text-amber-700";
+        const subColor = isSent
+          ? "text-green-600"
+          : isFailed
+          ? "text-red-600"
+          : "text-amber-600";
+        const title = isSent
+          ? "✓ Fax Delivered to Carelon"
+          : isFailed
+          ? `✗ Fax ${fs}`
+          : "⟳ Fax Submitted — awaiting delivery confirmation";
+        const formatCt = (iso?: string | null) => {
+          if (!iso) return "—";
+          try {
+            return new Date(iso).toLocaleString("en-US", {
+              timeZone: "America/Chicago",
+              year: "numeric", month: "short", day: "2-digit",
+              hour: "numeric", minute: "2-digit", second: "2-digit",
+              hour12: true, timeZoneName: "short",
+            });
+          } catch { return iso; }
+        };
+        return (
+          <div className={`rounded-lg p-4 border ${boxClass}`}>
+            <div className="flex items-center justify-between">
+              <p className={`font-semibold ${titleColor}`}>{title}</p>
+              {caseData.fax_confirmation_pdf_key && (
+                <a
+                  href={`${process.env.NEXT_PUBLIC_API_URL || ""}/api/cases/${caseData.id}/fax-confirmation`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-3 py-1.5 text-sm rounded bg-green-600 text-white hover:bg-green-700"
+                >
+                  Download Fax Receipt
+                </a>
+              )}
+            </div>
+            <div className={`text-sm ${subColor} mt-2 space-y-0.5 font-mono`}>
+              {caseData.fax_delivered_at && (
+                <p><span className="text-gray-500">Delivered:</span> {formatCt(caseData.fax_delivered_at)}</p>
+              )}
+              <p><span className="text-gray-500">RingCentral ID:</span> {caseData.fax_message_id}</p>
+            </div>
+            {isFailed && (
+              <p className="mt-2 text-xs text-red-600">
+                Delivery failed — check the Worklist (Fax Failed) for retry options.
+              </p>
+            )}
+          </div>
+        );
+      })()}
+
       {caseData.denial_reason && (
         <div className="bg-red-50 border border-red-200 rounded p-4">
           <p className="font-semibold text-red-700">Denied</p>

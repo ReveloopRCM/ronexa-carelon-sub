@@ -92,6 +92,7 @@ class ExceptionType(str, enum.Enum):
     PORTAL_ERROR = "PORTAL_ERROR"
     NO_AUTH_REQUIRED = "NO_AUTH_REQUIRED"
     ALREADY_WORKED = "ALREADY_WORKED"
+    FAX_FAILED = "FAX_FAILED"              # RC delivery failed or timed out
 
 
 class AccountShift(str, enum.Enum):
@@ -196,6 +197,14 @@ class Case(Base):
     denial_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     pend_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     auth_pdf_url: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    # Fax delivery tracking (pended cases only). Populated by validate_fax
+    # endpoint at send time, updated by the RingCentral status poller.
+    # See backend/app/ingest/poll_scheduler.py:_fax_poll_loop.
+    fax_message_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    fax_status: Mapped[str | None] = mapped_column(String, nullable=True)           # Queued | Sent | SendingFailed | Timeout
+    fax_delivered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    fax_confirmation_pdf_key: Mapped[str | None] = mapped_column(String, nullable=True)  # Azure Blob key for receipt PDF
 
     # Pathway / clinical scenario — from GetPathwayOptions + SetPathway
     pathway_name: Mapped[str | None] = mapped_column(String, nullable=True)

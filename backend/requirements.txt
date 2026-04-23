@@ -22,6 +22,9 @@ openpyxl>=3.1.5
 pymupdf>=1.25.0
 Pillow>=11.0.0
 
+# PDF generation — used for Fax Confirmation receipts
+reportlab>=4.0.0
+
 # LLM
 anthropic>=0.42.0
 

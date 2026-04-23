@@ -492,6 +492,11 @@ async def validate_fax(
         try:
             fax_result = await _send_fax_inline(case)
             if fax_result and fax_result.get("ok"):
+                # Seed the fax-tracking columns so the background poller can
+                # find this case and resolve its final delivery status.
+                # See poll_scheduler._fax_poll_loop.
+                case.fax_message_id = fax_result.get("message_id")
+                case.fax_status = fax_result.get("status") or "Queued"
                 await repo.create_audit_event(
                     db,
                     case_id=case_id,

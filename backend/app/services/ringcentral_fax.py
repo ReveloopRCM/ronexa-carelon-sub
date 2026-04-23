@@ -113,6 +113,88 @@ async def _ensure_authenticated() -> tuple[str, str]:
             return _access_token, config["server_url"]
 
 
+async def get_fax_status(message_id: str) -> dict:
+    """Fetch the current delivery status of a previously-sent fax.
+
+    Calls:
+        GET /restapi/v1.0/account/~/extension/~/message-store/{messageId}
+
+    Returns a normalized dict:
+        {
+          "ok": bool,
+          "message_id": str,
+          "status": "Queued" | "Sent" | "SendingFailed" | "Received" | "Unknown",
+          "last_modified_at": datetime | None,
+          "creation_time": datetime | None,
+          "fax_page_count": int | None,
+          "to": [{"phone": str, "status": str, "error": str | None}],
+          "raw": dict,                # full RC response (kept for PDF + audit)
+          "error": str | None,        # populated when ok=False
+        }
+
+    Non-fatal: returns ok=False on HTTP error rather than raising, so the
+    caller (background poller) can log and move on.
+    """
+    from datetime import datetime as _dt
+
+    try:
+        token, server_url = await _ensure_authenticated()
+    except Exception as e:
+        return {"ok": False, "message_id": message_id, "error": f"auth: {e}", "raw": {}}
+
+    url = f"{server_url}/restapi/v1.0/account/~/extension/~/message-store/{message_id}"
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+
+    try:
+        async with aiohttp.ClientSession() as sess:
+            async with sess.get(
+                url,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                text = await resp.text()
+                if resp.status == 404:
+                    return {"ok": False, "message_id": message_id,
+                            "error": "message not found (404)", "raw": {}}
+                if resp.status != 200:
+                    return {"ok": False, "message_id": message_id,
+                            "error": f"HTTP {resp.status}: {text[:200]}", "raw": {}}
+                data = json.loads(text)
+    except Exception as e:
+        return {"ok": False, "message_id": message_id,
+                "error": f"fetch: {e}", "raw": {}}
+
+    def _parse_dt(s):
+        if not s:
+            return None
+        try:
+            # RC returns ISO 8601 with "Z"
+            return _dt.fromisoformat(s.replace("Z", "+00:00"))
+        except Exception:
+            return None
+
+    to_list = []
+    for t in (data.get("to") or []):
+        to_list.append({
+            "phone": t.get("phoneNumber"),
+            "status": t.get("messageStatus"),
+            "error": t.get("faxErrorCode") or t.get("reason"),
+        })
+
+    return {
+        "ok": True,
+        "message_id": str(data.get("id", message_id)),
+        "status": data.get("messageStatus", "Unknown"),
+        "last_modified_at": _parse_dt(data.get("lastModifiedTime")),
+        "creation_time": _parse_dt(data.get("creationTime")),
+        "fax_page_count": data.get("faxPageCount"),
+        "fax_resolution": data.get("faxResolution"),
+        "to": to_list,
+        "raw": data,
+        "error": None,
+    }
+
+
 async def send_fax(
     to: str,
     pdf_bytes: bytes,
