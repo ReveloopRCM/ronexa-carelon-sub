@@ -37,6 +37,7 @@ class CaseState(str, enum.Enum):
     PENDING_STAT = "PENDING_STAT"
     WAITING_CLINICALS = "WAITING_CLINICALS"
     HOLD = "HOLD"
+    SUBMISSION_ERROR = "SUBMISSION_ERROR"  # Portal refused at submit step (duplicate modal, criteria, portal error)
     NOTES_UPLOADED = "NOTES_UPLOADED"
     PROCESSING = "PROCESSING"
     IN_REVIEW = "IN_REVIEW"        # Legacy — kept for backward compat

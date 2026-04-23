@@ -74,6 +74,48 @@ SEL = {
 }
 
 
+# Blocking modals / error layouts we expect to see AFTER clicking Submit.
+# Evaluated top-down; first match wins. `title_regex` is matched against the
+# title of any visible dialog/modal; `body_regex` against the visible body
+# text of the dialog OR the whole page. `cancel_button_text` is the exact
+# text of the button we click to back out of the modal cleanly (None → no
+# cancel attempt, fall back to homepage navigation).
+SUBMISSION_ERROR_PATTERNS: list[dict] = [
+    {
+        "error_type": "duplicate",
+        "title_regex": r"duplicate order review",
+        "body_regex":  r"duplicate of a previous request",
+        "cancel_button_text": "Cancel Request",
+    },
+    {
+        "error_type": "criteria_not_met",
+        "title_regex": r"(?:exam summary|clinical criteria)",
+        "body_regex":  r"does not meet medical necessity|criteria not met",
+        "cancel_button_text": "Withdraw this Request",
+    },
+    {
+        "error_type": "portal_error",
+        "title_regex": r"(?:session (?:has )?expired|you have been logged out|page you requested cannot be displayed|temporarily unavailable)",
+        "body_regex":  r"(?:session (?:has )?expired|temporarily unavailable|cannot be displayed)",
+        "cancel_button_text": None,
+    },
+]
+
+# Extract prior order numbers from the modal/page body.
+SUBMISSION_ERROR_PRIOR_ORDER_REGEX = re.compile(
+    r"Order\s*(?:Number|ID|#)[\s:\-]*([A-Z0-9]{4,})",
+    re.IGNORECASE,
+)
+
+
+def _first_prior_order(text: str) -> str | None:
+    """Return the first order number found in the given text, or None."""
+    if not text:
+        return None
+    m = SUBMISSION_ERROR_PRIOR_ORDER_REGEX.search(text)
+    return m.group(1) if m else None
+
+
 def _ok(data: dict | None = None) -> dict:
     """Successful step result."""
     return {"ok": True, "message": None, "data": data or {}}
@@ -1696,11 +1738,20 @@ class WebFormsClient:
     # --- SOP Step 9: Submit ---
 
     async def submit_request(self) -> dict:
-        """Click Submit This Request and extract confirmation.
+        """Click Submit This Request, detect blocking modals, extract confirmation.
+
+        After the Submit postback we first probe for a blocking modal / error
+        layout (duplicate-order review, criteria-not-met, session expired,
+        portal error page). If we find one, we capture the message, cancel
+        cleanly, and bubble up as a submission error — the case lands in the
+        new SUBMISSION_ERROR state instead of a generic HOLD.
 
         Returns:
             {"ok": True, "data": {"order_id": ..., "status": ..., ...}} on success
-            {"ok": False, "message": "portal error text"} on failure
+            {"ok": True, "data": {"submission_error": {...}}} when the portal
+                refused at submit step (not a process failure — still "ok" so
+                the caller can route to SUBMISSION_ERROR cleanly)
+            {"ok": False, "message": "portal error text"} on hard failure
         """
         logger.info("Submitting order request")
         try:
@@ -1709,6 +1760,17 @@ class WebFormsClient:
         except Exception as e:
             messages = await self.reader.read_messages()
             return _fail(messages.error or f"Submit failed: {e}")
+
+        # --- Blocking modal / error layout detection (runs BEFORE confirmation) ---
+        err = await self.detect_submission_error()
+        if err:
+            logger.warning(
+                f"Submission error detected: type={err.get('error_type')} "
+                f"title={err.get('title')!r} prior={err.get('prior_order_id')}"
+            )
+            # Cancel cleanly so the worker session doesn't get stuck on the modal.
+            await self._cancel_submission(err)
+            return _ok({"submission_error": err})
 
         # Read any messages
         messages = await self.reader.read_messages()
@@ -1734,6 +1796,143 @@ class WebFormsClient:
         result = await self.reader.read_multiple(selectors_map)
         logger.info(f"Confirmation: Order={result.get('order_id')}, Status={result.get('status')}")
         return result
+
+    async def detect_submission_error(self) -> dict | None:
+        """Scan the page after Submit for a blocking modal / error layout.
+
+        Returns None when the page looks like a normal confirmation page
+        (detector should NOT short-circuit the happy path). Otherwise
+        returns a dict:
+
+            {
+              "error_type": "duplicate" | "criteria_not_met" | "portal_error" | "unknown",
+              "title": str,                # dialog title or synthesized
+              "body_text": str,            # visible body snippet (up to ~800 chars)
+              "prior_order_id": str|None,  # first order number found in body text
+              "matched_rule": str|None,    # which pattern fired
+            }
+
+        Strategy:
+          1. Inspect the DOM for visible modals (jQuery UI / [role=dialog]).
+          2. Fall back to scanning the page body text.
+          3. Match against SUBMISSION_ERROR_PATTERNS top-down; first hit wins.
+          4. Extract the prior order number from whatever text we matched.
+        """
+        try:
+            raw = await self.page.evaluate(
+                r"""() => {
+                    // Collect candidate modal containers — Carelon uses jQuery UI
+                    // dialogs and a few custom popup divs. We also check common
+                    // ARIA role markers.
+                    const selectors = [
+                      '.ui-dialog:not(.ui-dialog-hidden)',
+                      '[role="dialog"]',
+                      '.modal.show',
+                      '.popup:not([style*="display: none"])',
+                    ];
+                    const dialogs = [];
+                    for (const sel of selectors) {
+                      const els = document.querySelectorAll(sel);
+                      for (const el of els) {
+                        // skip invisible ones
+                        const rect = el.getBoundingClientRect();
+                        if (rect.width === 0 || rect.height === 0) continue;
+                        const style = window.getComputedStyle(el);
+                        if (style.display === 'none' || style.visibility === 'hidden') continue;
+                        const titleEl = el.querySelector('.ui-dialog-title, .modal-title, .popup-title, h1, h2, h3');
+                        dialogs.push({
+                          title: (titleEl ? titleEl.innerText : '').trim(),
+                          body: el.innerText.substring(0, 1200),
+                        });
+                      }
+                    }
+                    return {
+                      url: window.location.href,
+                      bodyText: document.body.innerText.substring(0, 1600),
+                      dialogs: dialogs,
+                    };
+                }"""
+            )
+        except Exception as e:
+            logger.warning(f"detect_submission_error: page.evaluate failed: {e}")
+            return None
+
+        dialogs = raw.get("dialogs") or []
+        body_text: str = raw.get("bodyText") or ""
+
+        # 1) Try each dialog, top to bottom, against each pattern
+        for d in dialogs:
+            dtitle = (d.get("title") or "").strip()
+            dbody = (d.get("body") or "").strip()
+            for pat in SUBMISSION_ERROR_PATTERNS:
+                title_ok = bool(re.search(pat["title_regex"], dtitle, re.IGNORECASE))
+                body_ok  = bool(re.search(pat["body_regex"],  dbody + "\n" + body_text, re.IGNORECASE))
+                if title_ok or body_ok:
+                    return {
+                        "error_type": pat["error_type"],
+                        "title": dtitle or pat["error_type"].replace("_", " ").title(),
+                        "body_text": dbody[:800] or body_text[:800],
+                        "prior_order_id": _first_prior_order(dbody + "\n" + body_text),
+                        "matched_rule": pat["error_type"],
+                        "cancel_button_text": pat.get("cancel_button_text"),
+                    }
+
+        # 2) No visible dialog matched — scan the whole page body
+        for pat in SUBMISSION_ERROR_PATTERNS:
+            if re.search(pat["body_regex"], body_text, re.IGNORECASE):
+                return {
+                    "error_type": pat["error_type"],
+                    "title": pat["error_type"].replace("_", " ").title(),
+                    "body_text": body_text[:800],
+                    "prior_order_id": _first_prior_order(body_text),
+                    "matched_rule": pat["error_type"] + "_body_only",
+                    "cancel_button_text": pat.get("cancel_button_text"),
+                }
+
+        return None
+
+    async def _cancel_submission(self, err: dict) -> None:
+        """Back out of a submission-error modal without completing the submit.
+
+        Tries in order:
+          1. Click the modal's cancel/withdraw button by text (from the matched pattern).
+          2. Click any visible .ui-dialog .ui-dialog-buttonpane button with 'cancel' text.
+          3. Navigate to Carelon's homepage to free the session.
+
+        Non-fatal — we always log and move on so the caller returns cleanly.
+        """
+        btn_text = err.get("cancel_button_text")
+        try:
+            if btn_text:
+                # Try dialog-scoped first, then page-wide
+                selectors = [
+                    f".ui-dialog:not(.ui-dialog-hidden) button:has-text('{btn_text}')",
+                    f"[role='dialog'] button:has-text('{btn_text}')",
+                    f"button:has-text('{btn_text}')",
+                    f"input[type='button'][value='{btn_text}']",
+                ]
+                for sel in selectors:
+                    try:
+                        locator = self.page.locator(sel).first
+                        if await locator.count() > 0 and await locator.is_visible():
+                            logger.info(f"_cancel_submission: clicking {btn_text!r} via {sel}")
+                            await locator.click()
+                            try:
+                                await self.reader.wait_for_postback(timeout_ms=15000)
+                            except Exception:
+                                pass
+                            return
+                    except Exception:
+                        continue
+        except Exception as e:
+            logger.warning(f"_cancel_submission: button-click path failed: {e}")
+
+        # Fallback: navigate to homepage
+        try:
+            logger.info("_cancel_submission: falling back to homepage navigation")
+            await self.page.goto("https://www.providerportal.com/Default.aspx", timeout=20000)
+        except Exception as e:
+            logger.warning(f"_cancel_submission: homepage navigation failed: {e}")
 
     async def download_auth_pdf(self) -> bytes | None:
         """Download the authorization PDF from the confirmation page.

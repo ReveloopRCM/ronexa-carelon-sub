@@ -175,6 +175,28 @@
       "begin_new_request_button": "#asPrimary_ctl00_btnBeginRequest"
     },
 
+    "submission_error_patterns": [
+      {
+        "error_type": "duplicate",
+        "title_regex": "duplicate order review",
+        "body_regex": "duplicate of a previous request",
+        "cancel_button_text": "Cancel Request"
+      },
+      {
+        "error_type": "criteria_not_met",
+        "title_regex": "(?:exam summary|clinical criteria)",
+        "body_regex": "does not meet medical necessity|criteria not met",
+        "cancel_button_text": "Withdraw this Request"
+      },
+      {
+        "error_type": "portal_error",
+        "title_regex": "(?:session (?:has |)expired|you have been logged out|page you requested cannot be displayed|temporarily unavailable)",
+        "body_regex": "(?:session (?:has |)expired|temporarily unavailable|cannot be displayed)",
+        "cancel_button_text": null
+      }
+    ],
+    "submission_error_prior_order_regex": "Order\\s*(?:Number|ID|#)[\\s:\\-]*([A-Z0-9]{4,})",
+
     "confirmation": {
       "order_id": "#asPrimary_ctl00_lblRequestNumberSumm",
       "status": "#asPrimary_ctl00_lblReqStatSumm",

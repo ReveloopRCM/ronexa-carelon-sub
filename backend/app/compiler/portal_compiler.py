@@ -740,6 +740,54 @@ class PortalCompiler:
             if not r["ok"]:
                 return {"case_state": "HOLD", "hold_reason": r["message"]}
             data = r.get("data", {})
+
+            # --- Portal refused at submit step (duplicate modal, criteria, etc.) ---
+            # `submit_request` returns ok=True with a `submission_error` payload
+            # when it detected a blocking modal/error layout and backed out of
+            # it cleanly. Route to the dedicated SUBMISSION_ERROR state so reps
+            # see these separately from generic HOLDs and get the screenshot
+            # inline on the Worklist.
+            if data.get("submission_error"):
+                err = data["submission_error"]
+                # Capture a full-page screenshot of whatever the portal showed
+                # us. Key by case id so we don't clobber prior saves and don't
+                # end up with `*_None.png`.
+                screenshot_key = None
+                try:
+                    from datetime import date as _date
+                    last = (case.get("last_name") or "UNKNOWN").upper()
+                    first = (case.get("first_name") or "UNKNOWN").upper()
+                    err_type = err.get("error_type") or "unknown"
+                    screenshot_path = (
+                        f"/tmp/ronexa_submission_error_{last}_{first}_{err_type}.png"
+                    )
+                    await session.page.screenshot(path=screenshot_path, full_page=True)
+                    from app.ingest.blob_fetcher import _get_container
+                    from azure.storage.blob import ContentSettings
+                    screenshot_bytes = open(screenshot_path, "rb").read()
+                    case_id_for_key = case.get("id") or f"{last}_{first}"
+                    blob_key = (
+                        f"submission-errors/{_date.today().isoformat()}/"
+                        f"{case_id_for_key}_{err_type}.png"
+                    )
+                    container = _get_container()
+                    container.get_blob_client(blob_key).upload_blob(
+                        screenshot_bytes, overwrite=True,
+                        content_settings=ContentSettings(content_type="image/png"),
+                    )
+                    screenshot_key = blob_key
+                    logger.info(f"Submission-error screenshot uploaded: {blob_key}")
+                except Exception as e:
+                    logger.warning(
+                        f"Submission-error screenshot capture failed (non-fatal): {e}"
+                    )
+
+                return {
+                    "case_state": "SUBMISSION_ERROR",
+                    "submission_error": err,
+                    "submission_error_screenshot_key": screenshot_key,
+                }
+
             # Map portal confirmation fields to workflow-expected keys:
             #   order_id → portal_case_id, auth_number
             #   status → determination_status

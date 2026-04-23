@@ -254,6 +254,87 @@ async def mark_case_hold(case_id: str, hold_reason: str) -> None:
             logger.info(f"Worker: case {case_id} → HOLD ({hold_reason[:80]})")
 
 
+async def mark_case_submission_error(
+    case_id: str,
+    *,
+    error_type: str,
+    title: str,
+    body: str,
+    prior_order_id: str | None = None,
+    screenshot_key: str | None = None,
+    matched_rule: str | None = None,
+) -> None:
+    """Mark a case as SUBMISSION_ERROR — portal refused at the submit step.
+
+    Distinct from HOLD: these are cases where Carelon's server-side rules
+    actively rejected our submission (duplicate-order modal, criteria-not-met
+    page, session expired, portal error page). Reps get a dedicated Worklist
+    tab + the captured screenshot so they can decide without logging into
+    Carelon.
+
+    Not auto-retried — retrying deterministically hits the same portal rule.
+    """
+    from app.db.database import async_session_factory
+    from app.db import repositories as repo
+    from app.db.models import CaseState, ExceptionType
+    from sqlalchemy import select
+    from app.db.models import SubmissionJob, JobStatus
+
+    # Map our internal error_type tag to the existing ExceptionType enum.
+    exc_type_map = {
+        "duplicate":        ExceptionType.DUPLICATE_AUTH,
+        "criteria_not_met": ExceptionType.MED_NECESSITY,
+        "portal_error":     ExceptionType.PORTAL_ERROR,
+    }
+    exc_type = exc_type_map.get(error_type, ExceptionType.PORTAL_ERROR)
+
+    body_short = (body or "").strip()[:300]
+    human_reason = f"[{error_type}] {title or error_type}: {body_short}".strip()
+
+    async with async_session_factory() as db:
+        case = await repo.get_case(db, case_id)
+        if case:
+            case.state = CaseState.SUBMISSION_ERROR
+            case.hold_reason = human_reason
+            if screenshot_key:
+                # Reuse the same column the frontend already renders for
+                # APPROVED/PENDED confirmation screenshots.
+                case.auth_pdf_url = screenshot_key
+
+        job_result = await db.execute(
+            select(SubmissionJob).where(SubmissionJob.case_id == case_id)
+        )
+        job = job_result.scalar_one_or_none()
+        if job:
+            job.status = JobStatus.FAILED
+            job.exception_type = exc_type
+            job.exception_detail = (
+                f"{title or error_type}. "
+                f"Prior order: {prior_order_id or '—'}. "
+                f"{body_short}"
+            )[:500]
+
+        await repo.create_audit_event(
+            db, case_id=case_id, actor="system",
+            action="submission_error",
+            data={
+                "error_type": error_type,
+                "title": title,
+                "body": body_short,
+                "prior_order_id": prior_order_id,
+                "screenshot_key": screenshot_key,
+                "matched_rule": matched_rule,
+                "exception_type": exc_type.value,
+            },
+        )
+
+        await db.commit()
+        logger.warning(
+            f"Worker: case {case_id} → SUBMISSION_ERROR "
+            f"(type={error_type}, prior={prior_order_id or '—'})"
+        )
+
+
 async def mark_case_no_auth_review(case_id: str, reason: str, screenshot_key: str | None = None) -> None:
     """Route NO_AUTH_REQUIRED case to rep review queue.
 

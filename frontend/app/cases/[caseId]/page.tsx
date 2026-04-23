@@ -204,18 +204,21 @@ export default function CaseDetailPage() {
         );
       })()}
 
-      {/* Confirmation Screenshot — label matches actual outcome */}
-      {caseData.auth_pdf_url && caseData.auth_number && (
+      {/* Confirmation / Error Screenshot — label matches actual outcome.
+          SUBMISSION_ERROR cases have auth_pdf_url (error screenshot) but no
+          auth_number, so drop the auth_number guard and gate on url alone. */}
+      {caseData.auth_pdf_url && (caseData.auth_number || caseData.state === "SUBMISSION_ERROR") && (
         <div className="border rounded-lg overflow-hidden bg-gray-50">
           <p className="text-xs text-gray-500 px-3 py-2 border-b bg-white font-medium">
             {caseData.state === "APPROVED" ? "Portal Auth Confirmation" :
              caseData.state === "PENDED" || caseData.state === "PENDED_FAX_REVIEW" ? "Portal Submission (In Progress)" :
              caseData.state === "DENIED" ? "Portal Submission (Denied)" :
+             caseData.state === "SUBMISSION_ERROR" ? "Portal Submission Error — Carelon refused at submit step" :
              "Portal Confirmation"}
           </p>
           <img
             src={`${process.env.NEXT_PUBLIC_API_URL || ""}/api/cases/${caseData.id}/auth-pdf`}
-            alt="Authorization confirmation from portal"
+            alt="Portal confirmation or submission error screenshot"
             className="w-full"
           />
         </div>

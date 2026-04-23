@@ -23,6 +23,7 @@ const STATE_COLORS: Record<string, string> = {
   DENIED: "bg-red-100 text-red-700",
   PENDED: "bg-amber-100 text-amber-700",
   FAILED: "bg-red-200 text-red-800",
+  SUBMISSION_ERROR: "bg-rose-100 text-rose-700",
 };
 
 // ── Tab Definitions ──
@@ -44,6 +45,7 @@ const ALL_ACTIVE_STATES = [
 ];
 
 const SUBMISSION_STATES = ["SUBMITTING"];
+const SUBMISSION_ERROR_STATES = ["SUBMISSION_ERROR"];
 const HOLD_STATES = ["HOLD"];
 const COMPLETED_STATES = ["APPROVED", "DENIED", "PENDED", "NO_AUTH_REQUIRED", "ALREADY_WORKED"];
 
@@ -59,7 +61,7 @@ function todayInChicago(): string {
   }).format(new Date());
 }
 
-type Tab = "all_active" | "submission" | "hold" | "completed";
+type Tab = "all_active" | "submission" | "submission_error" | "hold" | "completed";
 
 // Bucket pills for the "All Active" tab — quick filters within active cases
 const BUCKETS = [
@@ -98,6 +100,8 @@ export default function CasesPage() {
       setCases(filtered);
     } else if (tab === "submission") {
       setCases(allCases.filter((c: any) => SUBMISSION_STATES.includes(c.state)));
+    } else if (tab === "submission_error") {
+      setCases(allCases.filter((c: any) => SUBMISSION_ERROR_STATES.includes(c.state)));
     } else if (tab === "hold") {
       setCases(allCases.filter((c: any) => HOLD_STATES.includes(c.state)));
     } else if (tab === "completed") {
@@ -127,6 +131,7 @@ export default function CasesPage() {
   // Counts per tab
   const activeCount = allCases.filter((c: any) => ALL_ACTIVE_STATES.includes(c.state)).length;
   const submissionCount = allCases.filter((c: any) => SUBMISSION_STATES.includes(c.state)).length;
+  const submissionErrorCount = allCases.filter((c: any) => SUBMISSION_ERROR_STATES.includes(c.state)).length;
   const holdCount = allCases.filter((c: any) => HOLD_STATES.includes(c.state)).length;
   const completedCount = allCases.filter((c: any) => COMPLETED_STATES.includes(c.state)).length;
   const bucketCounts = BUCKETS.reduce((acc, b) => {
@@ -137,6 +142,7 @@ export default function CasesPage() {
   const tabs: { key: Tab; label: string; count: number; color: string; activeColor: string }[] = [
     { key: "all_active", label: "All Active", count: activeCount, color: "bg-blue-100 text-blue-700", activeColor: "border-blue-600 text-blue-600" },
     { key: "submission", label: "Submission", count: submissionCount, color: "bg-cyan-100 text-cyan-700", activeColor: "border-cyan-600 text-cyan-600" },
+    { key: "submission_error", label: "Submission Errors", count: submissionErrorCount, color: "bg-rose-100 text-rose-700", activeColor: "border-rose-600 text-rose-600" },
     { key: "hold", label: "On Hold", count: holdCount, color: "bg-amber-100 text-amber-700", activeColor: "border-amber-600 text-amber-600" },
     { key: "completed", label: "Completed", count: completedCount, color: "bg-green-100 text-green-700", activeColor: "border-green-600 text-green-600" },
   ];

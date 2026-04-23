@@ -26,6 +26,7 @@ from app.worker.helpers import (
     is_portal_error,
     mark_case_hold,
     mark_case_no_auth_review,
+    mark_case_submission_error,
     mark_case_complete,
     save_flow_checks,
 )
@@ -241,6 +242,30 @@ async def finalize_case(event: dict) -> dict:
             )
             await navigate_to_homepage(worker_id)
             return {"status": "hold", "hold_reason": hold_reason}
+
+        # Step 4b: Portal refused at submit step (duplicate modal, criteria, etc.)
+        if result.get("case_state") == "SUBMISSION_ERROR":
+            err = result.get("submission_error") or {}
+            screenshot_key = result.get("submission_error_screenshot_key")
+            await mark_case_submission_error(
+                case_id,
+                error_type=err.get("error_type") or "unknown",
+                title=err.get("title") or "",
+                body=err.get("body_text") or "",
+                prior_order_id=err.get("prior_order_id"),
+                screenshot_key=screenshot_key,
+                matched_rule=err.get("matched_rule"),
+            )
+            logger.warning(
+                f"Worker/{worker_id}: case {case_id} finalize → SUBMISSION_ERROR "
+                f"(type={err.get('error_type')}, prior={err.get('prior_order_id') or '—'})"
+            )
+            await navigate_to_homepage(worker_id)
+            return {
+                "status": "submission_error",
+                "submission_error": err,
+                "screenshot_key": screenshot_key,
+            }
 
         # Step 5: Save completion state
         await mark_case_complete(case_id, result)
