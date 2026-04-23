@@ -148,6 +148,13 @@ class Case(Base):
 
     # Portal submission fields
     cpt_code: Mapped[str] = mapped_column(String, nullable=False)
+    # Laterality + anatomy parsed from Mongo `CPTDesc` at ingest (e.g. "MRI Knee
+    # WO - RIGHT" → body_side_desc="Right", body_part_desc="Knee"). Both nullable
+    # because many CPTs (brain, abdomen, chest) have no laterality. Used by the
+    # compiler at `AddExam` and rendered on the Worklist / case detail page so
+    # bilateral exams (same CPT, different side) are distinguishable at a glance.
+    body_side_desc: Mapped[str | None] = mapped_column(String, nullable=True)
+    body_part_desc: Mapped[str | None] = mapped_column(String, nullable=True)
     icd1: Mapped[str | None] = mapped_column(String, nullable=True)
     icd2: Mapped[str | None] = mapped_column(String, nullable=True)
     icd3: Mapped[str | None] = mapped_column(String, nullable=True)

@@ -328,7 +328,14 @@ export default function CasesPage() {
                   <td className="px-3 py-2">
                     {c.first_name} {c.last_name}
                   </td>
-                  <td className="px-3 py-2">{c.cpt_code}</td>
+                  <td className="px-3 py-2">
+                    <div>{c.cpt_code}</div>
+                    {(c.body_side_desc || c.body_part_desc) && (
+                      <div className="text-[11px] text-gray-500 mt-0.5">
+                        {[c.body_side_desc, c.body_part_desc].filter(Boolean).join(" ")}
+                      </div>
+                    )}
+                  </td>
                   <td className="px-3 py-2">{c.center_abbr || c.center_npi}</td>
                   <td className="px-3 py-2">
                     {c.auth_number ? (
@@ -399,7 +406,14 @@ export default function CasesPage() {
                   <td className="px-3 py-2">
                     {c.first_name} {c.last_name}
                   </td>
-                  <td className="px-3 py-2">{c.cpt_code}</td>
+                  <td className="px-3 py-2">
+                    <div>{c.cpt_code}</div>
+                    {(c.body_side_desc || c.body_part_desc) && (
+                      <div className="text-[11px] text-gray-500 mt-0.5">
+                        {[c.body_side_desc, c.body_part_desc].filter(Boolean).join(" ")}
+                      </div>
+                    )}
+                  </td>
                   <td className="px-3 py-2">{c.center_abbr || c.center_npi}</td>
                   <td className="px-3 py-2 text-xs text-amber-700 max-w-[300px]">
                     {c.hold_reason || c.exception_detail || "\u2014"}
@@ -452,7 +466,14 @@ export default function CasesPage() {
                   <td className="px-3 py-2">
                     {c.first_name} {c.last_name}
                   </td>
-                  <td className="px-3 py-2">{c.cpt_code}</td>
+                  <td className="px-3 py-2">
+                    <div>{c.cpt_code}</div>
+                    {(c.body_side_desc || c.body_part_desc) && (
+                      <div className="text-[11px] text-gray-500 mt-0.5">
+                        {[c.body_side_desc, c.body_part_desc].filter(Boolean).join(" ")}
+                      </div>
+                    )}
+                  </td>
                   <td className="px-3 py-2 text-xs">{c.icd1}</td>
                   <td className="px-3 py-2">{c.center_abbr || c.center_npi}</td>
                   <td className="px-3 py-2 text-xs text-gray-500">
@@ -508,7 +529,14 @@ export default function CasesPage() {
                   <td className="px-3 py-2">
                     {c.first_name} {c.last_name}
                   </td>
-                  <td className="px-3 py-2">{c.cpt_code}</td>
+                  <td className="px-3 py-2">
+                    <div>{c.cpt_code}</div>
+                    {(c.body_side_desc || c.body_part_desc) && (
+                      <div className="text-[11px] text-gray-500 mt-0.5">
+                        {[c.body_side_desc, c.body_part_desc].filter(Boolean).join(" ")}
+                      </div>
+                    )}
+                  </td>
                   <td className="px-3 py-2">{c.center_abbr || c.center_npi}</td>
                   <td className="px-3 py-2 font-mono text-xs">
                     {c.auth_number || "\u2014"}

@@ -107,6 +107,13 @@ export default function CaseDetailPage() {
         <div className="border rounded p-4 space-y-2">
           <h2 className="font-semibold">Procedure</h2>
           <p>CPT: {caseData.cpt_code}</p>
+          {(caseData.body_side_desc || caseData.body_part_desc) && (
+            <p className="text-sm text-gray-600">
+              Side / Part: <span className="font-medium text-gray-800">
+                {[caseData.body_side_desc, caseData.body_part_desc].filter(Boolean).join(" \u00b7 ")}
+              </span>
+            </p>
+          )}
           <p className="text-sm text-gray-600">
             ICD: {caseData.icd1 || "\u2014"}
           </p>

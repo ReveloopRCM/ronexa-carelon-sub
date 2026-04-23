@@ -14,6 +14,7 @@ from app.accumulator.answer_accumulator import AnswerAccumulator
 from app.compiler.portal_dna import NavigationPhase, PhaseStep, PortalDNA
 from app.core.settings import settings
 from app.portal.clinical_flow import ClinicalExamFlow
+from app.portal.cpt_desc import parse_cpt_desc
 from app.portal.session import PlaywrightPortalSession
 from app.portal.webforms_client import WebFormsClient
 
@@ -231,11 +232,27 @@ class PortalCompiler:
             # Derive contrast from CPT
             contrast_id, contrast_label = ClinicalExamFlow.derive_contrast_from_cpt(cpt_code)
 
+            # Laterality: for bilateral CPTs (e.g. 73721 knee/hip), Mongo's
+            # `CPTDesc` string carries the side + anatomy ("MRI Knee WO - RIGHT").
+            # Parse into Carelon's preferred codes (LFT/RGT/BIL, KNEE/HIP/SHLDR/…)
+            # and pass to setup_exam; clinical_flow's existing _parse_body_side /
+            # _parse_body_part match these against the live GetCptCodeBodySidePart
+            # response and produce the padded canonical strings for AddExam.
+            cpt_desc = (case.get("raw_data") or {}).get("CPTDesc", "") or ""
+            side_code, side_desc, part_code, part_desc = parse_cpt_desc(cpt_desc)
+            if side_code or part_code:
+                logger.info(
+                    f"Laterality parsed from CPTDesc={cpt_desc!r} -> "
+                    f"side={side_code}/{side_desc!r} part={part_code}/{part_desc!r}"
+                )
+
             # Setup exam (CPT + body side + contrast + validate + add)
             r = await clinical_flow.setup_exam(
                 cpt_code=cpt_code,
                 contrast=contrast_label,
                 contrast_id=contrast_id,
+                body_side=side_code,
+                body_part=part_code,
             )
             if not r["ok"]:
                 return {"case_state": "HOLD", "hold_reason": r["message"]}

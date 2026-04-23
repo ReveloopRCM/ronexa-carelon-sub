@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import repositories as repo
 from app.db.models import Case, CaseState
+from app.portal.cpt_desc import parse_cpt_desc
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,11 @@ async def run_sync(
         patient_phone = case_dict.pop("patient_phone", None)
         external_ref = case_dict.pop("external_reference_id", None)
 
+        # Parse laterality + body part from Mongo's CPTDesc ("MRI Knee WO - RIGHT").
+        # Empty strings on parse failure → Case columns stay NULL (no regression).
+        cpt_desc = (case_dict.get("raw_data") or {}).get("CPTDesc") or ""
+        _, body_side_desc, _, body_part_desc = parse_cpt_desc(cpt_desc)
+
         case = Case(
             id=case_dict["id"],
             exam_id=case_dict["exam_id"],
@@ -76,6 +82,8 @@ async def run_sync(
             center_npi=case_dict.get("center_npi") or "",
             center_abbr=case_dict.get("center_abbr"),
             cpt_code=case_dict.get("cpt_code") or "",
+            body_side_desc=(body_side_desc or None),
+            body_part_desc=(body_part_desc or None),
             icd1=case_dict.get("icd1"),
             icd2=case_dict.get("icd2"),
             icd3=case_dict.get("icd3"),

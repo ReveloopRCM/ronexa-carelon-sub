@@ -625,6 +625,11 @@ def _serialize_case(case) -> dict:
         "center_npi": case.center_npi,
         "center_abbr": case.center_abbr,
         "cpt_code": case.cpt_code,
+        # Laterality + anatomy (bilateral exam disambiguation). Nullable; many
+        # CPTs (brain, abdomen, chest) have no side. Parsed from Mongo CPTDesc
+        # at ingest and used by the compiler for AddExam BodySideCode/BodyPartCode.
+        "body_side_desc": getattr(case, "body_side_desc", None),
+        "body_part_desc": getattr(case, "body_part_desc", None),
         "icd1": case.icd1,
         "carrier_id": case.carrier_id,
         "clinical_blob_key": case.clinical_blob_key,
