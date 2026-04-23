@@ -252,7 +252,13 @@ async def _resolve_one_fax(case_id: str, message_id: str) -> None:
 
 async def _mark_fax_delivered(db, case, status_data: dict) -> None:
     case.fax_status = "Sent"
-    case.fax_delivered_at = status_data.get("last_modified_at")
+    # Strip tzinfo — our DB columns are naive UTC (no tz). RC returns
+    # tz-aware UTC so we need to convert, not just assign.
+    dt = status_data.get("last_modified_at")
+    if dt is not None and dt.tzinfo is not None:
+        from datetime import timezone
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    case.fax_delivered_at = dt
 
 
 async def _mark_fax_failed(db, case, status_data: dict,
