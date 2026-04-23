@@ -47,6 +47,18 @@ const SUBMISSION_STATES = ["SUBMITTING"];
 const HOLD_STATES = ["HOLD"];
 const COMPLETED_STATES = ["APPROVED", "DENIED", "PENDED", "NO_AUTH_REQUIRED", "ALREADY_WORKED"];
 
+// Date default pinned to Central time so the picker never rolls to
+// tomorrow's UTC date while Chicago is still on today. `en-CA` locale
+// yields a YYYY-MM-DD string the backend's date_from/date_to expects.
+function todayInChicago(): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Chicago",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
+
 type Tab = "all_active" | "submission" | "hold" | "completed";
 
 // Bucket pills for the "All Active" tab — quick filters within active cases
@@ -67,7 +79,7 @@ export default function CasesPage() {
   const [tab, setTab] = useState<Tab>("all_active");
   const [activeBucket, setActiveBucket] = useState("all");
   const [stateFilter, setStateFilter] = useState("");
-  const [dateFilter, setDateFilter] = useState(new Date().toISOString().slice(0, 10));
+  const [dateFilter, setDateFilter] = useState(todayInChicago());
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<any>(null);
