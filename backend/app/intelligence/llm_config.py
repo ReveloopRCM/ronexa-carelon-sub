@@ -249,6 +249,17 @@ These are hard limits on clinical inference. Do NOT cross these boundaries:
 - **Temporal Claims Require Date Math**: When a question asks "within X days" or "within X weeks," calculate the actual number of days between the documented date and the current visit. "Recent" or "recently" in a provider's note does NOT satisfy a specific timeframe — do the math. Use the current date or visit date as the reference point
 - **Historical Diagnosis ≠ Current Finding**: An ICD code on the problem list or a diagnosis from a prior visit does not mean that finding is active or present in the current visit. Check if the current visit note confirms or contradicts it
 
+## READ THE OPTION LITERALLY — especially on "features present" questions
+Senior auth reps get approvals by answering each question precisely, not by stretching evidence. Multi-select questions like "Are any of the following clinical features present?" ask about the **current visit**. Historical mentions — "history of…", "h/o…", "past medical history", "status post…", "previously", "resolved", "excised", "remote history of…", "diagnosed in [YEAR]", "denies current…" — are separate facts. They are clinically important for context but **they are NOT valid evidence for a positive checklist pick**.
+
+**Implicit present is valid.** Findings listed under **Physical Exam**, **Assessment**, **Assessment / Plan**, or **HPI** headers are inherently present-tense, even when the note doesn't say the word "current" or "active". A line like "Physical Exam: Palpable mass in RUQ" IS a current finding. Do not over-correct and flip these to negatives — the rule below asks for a present-tense phrase, not for the literal word "current".
+
+**Literal evidence beats inference on this question class.** On multi-select clinical-feature questions (Type 4 checklists), literal documentation is the high card — inference does not bridge from history to current. If the chart literally quotes a current-visit finding that matches an option, pick it. If it doesn't, pick the negative option ("None of these apply" / "Unknown"). Do NOT use the general clinical-inference permission elsewhere in this prompt to manufacture a present-tense finding from historical text.
+
+**Anti-example.** Chart says "patient mentions history of melanoma". That is a history of cancer, not a known malignancy. Selecting "Known malignancy" in that case produces a submission the portal will verify and pend. A senior rep picks "None of these apply" here and lets the actual documented pathway criteria (pain, failed conservative care, neurologic findings) carry the approval.
+
+**Rule.** On multi-select clinical-feature questions, select a positive option only if you can quote a present-tense finding from this visit's HPI, Physical Exam, Assessment, or Plan. Otherwise pick the negative option.
+
 # OPERATIONAL CONSTRAINTS
 1. Prioritize Red Flags: Red flags (weakness, saddle anesthesia, fever, progressive neurological deficit) are the fastest routes to algorithm approval. Always check for these first.
 2. Conditional Logic: Strictly follow "ANY" (one match suffices) vs. "ALL" (every match required) logic in the portal question options.
@@ -326,7 +337,10 @@ Q{{ qa.question_number }}: "{{ qa.question_text }}"
   "chain_coherence": "How this answer connects to previous answers to form a unified clinical narrative",
   "notes_answer_value": "The literal answer supported only by explicit text (identifies documentation gaps)",
   "approval_gap": "What was inferred to bridge from documentation to approval criteria (empty if fully explicit)"
-}""",
+}
+
+# MULTI-SELECT CLINICAL-FEATURE RULE
+On multi-select clinical-feature questions ("Are any of the following … present?"), `evidence.explicit` MUST include a quoted phrase from this visit's HPI, Physical Exam, Assessment, or Plan for every positive option selected. Phrases under those headers are present-tense even without the word "current". If no such quote exists for an option, do NOT pick that option — pick the negative option ("None of these apply" / "Unknown"), and both `answer_value` and `notes_answer_value` must agree.""",
 
     "prompt_match_system": """You match incoming portal questions to previously saved answers during prior authorization submission.
 Your job is simple: determine if the incoming question matches one of the saved answers so the correct saved answer can be resubmitted.

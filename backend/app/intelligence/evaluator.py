@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 
 from app.core.settings import settings
@@ -19,6 +20,185 @@ from app.intelligence.models import PortalObservation, TypedDecision
 from app.intelligence.prompts import build_evaluation_prompt, get_evaluation_system_prompt
 
 logger = logging.getLogger(__name__)
+
+
+# ── Temporal guard (narrow safety net for multi-select "features present?" picks) ──
+#
+# The main fix for "LLM selects Known malignancy from a history-of-melanoma mention"
+# lives in the prompt. This guard is belt-and-suspenders: if the LLM still picks a
+# positive clinical feature off historical language, demote confidence so the case
+# routes to L1 rep review via the existing threshold. We never override the answer
+# value — just the confidence — so there is no silent auto-correction.
+
+_CLINICAL_FEATURE_QUESTION_RE = re.compile(
+    r"(clinical features|any of the following).{0,120}(present|apply)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+# Option texts that, when present in the options list, mark a question as a
+# clinical-features checklist even if the stem doesn't match the regex above.
+_CLINICAL_FEATURE_OPTION_MARKERS: tuple[str, ...] = (
+    "known malignancy",
+    "tuberculosis",
+    "iv drug abuse",
+    "fever",
+)
+
+# "None" / "unknown" / explicit-negative option text prefixes. If the LLM's selected
+# option text starts with any of these, we treat the pick as a truthful negative and
+# the guard does nothing.
+_NEGATIVE_OPTION_PREFIXES: tuple[str, ...] = (
+    "none of these",
+    "unknown",
+    "no symptoms",
+    "neither",
+    "no ",  # "No", "No ...", but we already match "none of these" first
+)
+
+# Historical-language red flags. Matching any of these against the LLM's reasoning +
+# evidence text indicates the evidence for a positive pick is historical.
+_TEMPORAL_RED_FLAG_TOKENS: tuple[str, ...] = (
+    "history of",
+    "h/o ",
+    "past medical history",
+    "status post",
+    "s/p ",
+    "previously",
+    "resolved",
+    "excised",
+    "prior ",
+    "remote history",
+    "denies current",
+    "per prior records",
+)
+_DIAGNOSED_IN_YEAR_RE = re.compile(r"diagnosed\s+in\s+\d{4}", re.IGNORECASE)
+
+# Present-tense confirmers. Any of these in the evidence blob is enough to treat the
+# quote as present-tense — covers both explicit "current/active" language and the
+# "implicit present" case where a finding lives under a Physical Exam / Assessment /
+# Plan / HPI header.
+_PRESENT_TENSE_CONFIRMERS: tuple[str, ...] = (
+    "current",
+    "currently",
+    "active",
+    "today",
+    "on exam",
+    "on this visit",
+    "ongoing",
+    "at present",
+    "physical exam",
+    "physical examination",
+    "assessment:",
+    "assessment /",
+    "assessment/",
+    "plan:",
+    "hpi",
+    "history of present illness",
+)
+
+
+def _is_clinical_feature_question(observation: PortalObservation) -> bool:
+    """Detect a multi-select 'Are any of the following clinical features present?' question."""
+    if _CLINICAL_FEATURE_QUESTION_RE.search(observation.question_text or ""):
+        return True
+    # Fallback: the option set gives it away even when the stem is phrased differently.
+    option_texts = " | ".join((o.get("text") or "").lower() for o in (observation.options or []))
+    return any(m in option_texts for m in _CLINICAL_FEATURE_OPTION_MARKERS)
+
+
+def _is_positive_option(option_text: str) -> bool:
+    """True when the option text is an actual positive clinical feature (not a negative/unknown)."""
+    t = (option_text or "").strip().lower()
+    if not t:
+        return False
+    return not any(t.startswith(p) for p in _NEGATIVE_OPTION_PREFIXES)
+
+
+def _evidence_blob(result: dict) -> str:
+    """Concatenate the LLM's reasoning + evidence fields into a single scan blob."""
+    parts: list[str] = []
+    if result.get("reasoning"):
+        parts.append(str(result["reasoning"]))
+    ev = result.get("evidence")
+    if isinstance(ev, dict):
+        for k in ("explicit", "inferred"):
+            v = ev.get(k)
+            if v:
+                parts.append(str(v))
+    elif ev:
+        parts.append(str(ev))
+    return "\n".join(parts).lower()
+
+
+def _temporal_guard(observation: PortalObservation, result: dict, answer_value) -> None:
+    """Narrow safety net for multi-select clinical-feature questions.
+
+    Demotes `result["confidence"]` to ≤40 and annotates `reasoning` / `approval_gap`
+    when a positive feature pick is only supported by historical language. Never
+    overrides the answer value.
+    """
+    if not _is_clinical_feature_question(observation):
+        return
+
+    # Build map from option id → option text for the LLM's selected picks.
+    opt_by_id = {o.get("id"): o.get("text", "") for o in (observation.options or [])}
+    selected_ids = answer_value if isinstance(answer_value, list) else ([answer_value] if answer_value else [])
+    positive_texts = [opt_by_id.get(i, "") for i in selected_ids if _is_positive_option(opt_by_id.get(i, ""))]
+    if not positive_texts:
+        return  # All picks were negative / unknown — nothing to guard against.
+
+    blob = _evidence_blob(result)
+    if not blob:
+        return
+
+    # Temporal red flags present?
+    red_flag_hit = next(
+        (tok for tok in _TEMPORAL_RED_FLAG_TOKENS if tok in blob),
+        None,
+    )
+    if red_flag_hit is None and _DIAGNOSED_IN_YEAR_RE.search(blob):
+        red_flag_hit = "diagnosed in <year>"
+
+    if red_flag_hit is None:
+        return  # No historical language detected — nothing to guard.
+
+    # Present-tense confirmer in the same blob? If yes, the positive pick is
+    # likely supported by a current-visit finding (e.g. "Physical Exam: ...") and
+    # we don't want to over-correct. BUT: "denies current X" / "no current X" /
+    # "not currently X" are negations that *contain* the literal word "current";
+    # strip those phrases before checking so their "current" doesn't spuriously
+    # satisfy a confirmer.
+    confirmer_blob = blob
+    for neg_phrase in ("denies current", "no current", "not currently"):
+        confirmer_blob = confirmer_blob.replace(neg_phrase, "")
+    if any(c in confirmer_blob for c in _PRESENT_TENSE_CONFIRMERS):
+        return
+
+    # Demote + annotate.
+    orig_conf = float(result.get("confidence") or 0)
+    new_conf = min(orig_conf, 40.0)
+    result["confidence"] = new_conf
+
+    note = (
+        "TEMPORAL GUARD: positive pick rests on historical language "
+        f"(matched '{red_flag_hit}') with no present-tense confirmation; "
+        "rep verification required."
+    )
+    existing_reasoning = result.get("reasoning") or ""
+    result["reasoning"] = (existing_reasoning + "\n" + note).strip()
+
+    # Only populate approval_gap if empty so we don't clobber a real gap note.
+    if not (result.get("approval_gap") or "").strip():
+        result["approval_gap"] = note
+
+    logger.info(
+        "temporal_guard: demoted conf %.0f→%.0f on Q=%s options=%s token=%r",
+        orig_conf,
+        new_conf,
+        (observation.question_id or "")[:8],
+        positive_texts,
+        red_flag_hit,
+    )
 
 
 async def _call_anthropic(prompt: str, system: str, model: str, api_key: str) -> str:
@@ -237,6 +417,12 @@ async def decide_answer(
     notes_val = result.get("notes_answer_value")
     if multi_select and isinstance(notes_val, str):
         notes_val = [notes_val]
+
+    # Temporal guard — narrow safety net for multi-select "features present?" questions
+    # where the LLM still picks a positive from historical language. Mutates
+    # result["confidence"] / result["reasoning"] / result["approval_gap"] in place; does
+    # not override answer_value. See _temporal_guard() docstring for scope + rules.
+    _temporal_guard(observation, result, answer_value)
 
     # Parse evidence — v2 schema returns {explicit, inferred} object; serialize to string
     evidence_raw = result.get("evidence")
