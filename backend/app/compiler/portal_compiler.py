@@ -408,6 +408,34 @@ class PortalCompiler:
             })""")
             logger.info(f"After hdnAction=6: {page_state}")
 
+            # Defensive: detect Carelon's generic "Page Not Available" error
+            # page. If we got redirected there (instead of the facility
+            # search page), bail out with an honest hold reason. Otherwise
+            # the downstream `search_facility()` will eat a misleading 10 s
+            # `wait_for_selector` timeout on `lbProviderSearchAdvanced` and
+            # surface the wrong error to reps.
+            body = (page_state.get("bodySnippet") or "").lower()
+            on_error_page = (
+                "page you requested cannot be displayed" in body
+                or "temporarily unavailable" in body
+                or (not page_state.get("hasFacilitySearch")
+                    and not page_state.get("hasAdvancedSearch"))
+            )
+            if on_error_page:
+                logger.warning(
+                    f"hdnAction=6 landed on Carelon error page. "
+                    f"URL={page_state.get('url')} body={body[:200]!r}"
+                )
+                return {
+                    "case_state": "HOLD",
+                    "hold_reason": (
+                        "Carelon returned an error page after exam summary → "
+                        "facility transition. Submission state likely incomplete "
+                        "— check compiler logs for the prior phase."
+                    ),
+                    "hdnaction6_page_state": page_state,
+                }
+
         else:
             # Fallback: raw API calls for unknown phases
             for step in phase.steps:
@@ -925,58 +953,36 @@ class PortalCompiler:
                     })
 
             if changed_group_id is not None:
-                # ---- BACKTRACK path: rep edited a question ----
-                logger.info(f"BACKTRACK: rep edited GroupId={changed_group_id}")
-
-                # Step 1: Add answers BEFORE the changed group to accumulator
-                for pa in portal_answers:
-                    pa_gid = pa.get("GroupId", 0)
-                    if pa_gid < changed_group_id:
-                        accumulator.add(pa)
-                        logger.info(f"  Backtrack: added GroupId={pa_gid} (unchanged)")
-
-                # Step 2: Use accumulator.change() for the edited group
-                # This calls DeleteAssetsByGroupId for all downstream groups
-                changed_answer = None
-                for pa in portal_answers:
-                    if pa.get("GroupId") == changed_group_id:
-                        changed_answer = pa
-                        break
-
-                if changed_answer:
-                    await accumulator.change(changed_answer, session, delete_endpoint)
-                    logger.info(
-                        f"  Backtrack: changed GroupId={changed_group_id}, "
-                        f"downstream deleted, accumulator count={accumulator.count}"
-                    )
-                else:
-                    logger.error(f"  Backtrack: no answer found for changed GroupId={changed_group_id}")
-                    return {"case_state": "HOLD", "hold_reason": f"No answer for changed GroupId={changed_group_id}"}
-
-                # Step 3: Submit accumulated answers to portal — portal re-processes
-                next_result = await clinical_flow.answer_questions(accumulator.payload)
-
-                if not next_result["ok"]:
-                    logger.error(f"Backtrack submission failed: {next_result['message']}")
-                    return {"case_state": "HOLD", "hold_reason": next_result["message"]}
-
-                # Step 4: Check for new downstream questions
-                remaining = next_result["data"].get("questions", [])
-                done = next_result["data"].get("done", False)
-
-                if remaining and not done:
-                    logger.info(
-                        f"Backtrack produced {len(remaining)} new downstream questions — "
-                        f"falling through to LLM path"
-                    )
-                    new_questions_from_backtrack = remaining
-                    # Fall through to LLM while-loop below
-                elif done:
-                    logger.info("Backtrack complete — portal at done state (no new questions)")
-                    return result
-                else:
-                    logger.info("Backtrack complete — no remaining questions")
-                    return result
+                # ---- BACKTRACK rerun: route through the LLM path ----
+                # The previous surgical approach submitted accumulated answers
+                # keyed by first-pass QuestionIds against a fresh-browser
+                # session. Those IDs don't reliably match what the portal
+                # generates on the new session, which left the exam in an
+                # incomplete state server-side and broke the hdnAction=6
+                # summary → facility transition (reps saw a misleading
+                # "Could not open advanced facility search" timeout that
+                # was actually Carelon's generic "Page Not Available" error
+                # page).
+                #
+                # Simpler + correct: skip accumulator.change() entirely and
+                # fall through to the existing LLM while-loop below. The
+                # rep_answers_for_llm builder (line 1125+) will pick up
+                # `resume_answers` + `changed_group_id` and feed them into
+                # the evaluator prompt. The RE-RUN CONTEXT section in
+                # prompts.py:129-167 instructs the LLM to select the rep's
+                # approved answer with confidence 100 for any matching
+                # group, and evaluate fresh for any genuinely new downstream
+                # questions produced by the edit. Every submitted answer is
+                # keyed by the *current* portal's QuestionId so the portal
+                # exam state is clean.
+                logger.info(
+                    f"Backtrack rerun (changed_group_id={changed_group_id}): "
+                    f"routing {len(portal_answers)} rep answers through LLM "
+                    f"path (not surgical replay)"
+                )
+                # Intentionally do NOT reset resume_answers/changed_group_id —
+                # both are needed by the rep_answers_for_llm builder below.
+                # Fall through to the while-loop at line ~1170.
 
             else:
                 # ---- APPROVED path: step-through with answer matching ----
