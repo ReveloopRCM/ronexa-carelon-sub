@@ -89,6 +89,10 @@ async def list_queue(
         states = [CaseState.CLINICAL_REVIEW]
     elif level == "awaiting_clinicals":
         states = [CaseState.WAITING_CLINICALS]
+    elif level == "fax":
+        # Dedicated fax-review filter so this tab isn't starved by a large
+        # L1 queue when all three review states share one paginated response.
+        states = [CaseState.PENDED_FAX_REVIEW]
     else:
         states = [
             CaseState.L1_REVIEW,

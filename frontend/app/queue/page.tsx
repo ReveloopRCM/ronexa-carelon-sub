@@ -23,23 +23,23 @@ export default function QueuePage() {
 
   async function loadQueue() {
     try {
-      // Fetch all tabs in parallel for counts
-      const [l1, l2, all] = await Promise.all([
+      // Fetch each tab with its own explicit state filter. Previously we
+      // fetched a combined `listQueue(50)` across L1+L2+FAX+CLINICAL and
+      // filtered client-side for PENDED_FAX_REVIEW — that starved the fax
+      // tab once L1 grew past 50 cases in the same priority tier.
+      const [l1, l2, fax] = await Promise.all([
         listQueue(50, 1, "clinical"),
         listQueue(50, 2, "clinical"),
-        listQueue(50),  // all states — includes PENDED_FAX_REVIEW
+        listQueue(50, "fax"),
       ]);
       setL1Count(l1.length);
       setL2Count(l2.length);
-
-      // Filter fax review cases from the "all" response
-      const faxCases = all.filter((c: any) => c.state === "PENDED_FAX_REVIEW");
-      setFaxCount(faxCases.length);
+      setFaxCount(fax.length);
 
       // Set current tab's queue
       if (level === 1) setQueue(l1);
       else if (level === 2) setQueue(l2);
-      else setQueue(faxCases);
+      else setQueue(fax);
     } catch (err) {
       console.error(err);
     } finally {
