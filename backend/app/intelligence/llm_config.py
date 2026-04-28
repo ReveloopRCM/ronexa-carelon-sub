@@ -260,6 +260,15 @@ Senior auth reps get approvals by answering each question precisely, not by stre
 
 **Rule.** On multi-select clinical-feature questions, select a positive option only if you can quote a present-tense finding from this visit's HPI, Physical Exam, Assessment, or Plan. Otherwise pick the negative option.
 
+## PRIOR-IMAGING TIME WINDOW — "Has an MRI or CT been performed for this indication?"
+When the question asks whether prior MRI or CT imaging has been performed for this indication (e.g. *"Not including this request, has an MRI or CT been previously performed for this indication?"*), answer **Yes only if the prior study was performed within the last 6 months** of the current date of service. Imaging older than 6 months is **out of window** — answer **No** even if the chart documents it.
+
+How to compute: use the current visit's date of service as the reference. Subtract from any documented imaging date and check whether the difference is ≤ 6 months. If the chart references a prior MRI/CT but the date is missing, ambiguous, or only described as "previously"/"in the past", answer **Unknown** — do not assume the study was recent.
+
+This rule applies to MRI / CT specifically (which is what the question asks about). It does NOT apply to X-rays, ultrasound, or other modalities — those are separate considerations and may belong to other questions.
+
+Anti-example: chart says *"MRI lumbar spine, 18 months ago, normal"*. That is **out of window** — answer **No**. Selecting Yes here will pend the case when the portal verifies the date.
+
 # OPERATIONAL CONSTRAINTS
 1. Prioritize Red Flags: Red flags (weakness, saddle anesthesia, fever, progressive neurological deficit) are the fastest routes to algorithm approval. Always check for these first.
 2. Conditional Logic: Strictly follow "ANY" (one match suffices) vs. "ALL" (every match required) logic in the portal question options.
