@@ -248,6 +248,7 @@ These are hard limits on clinical inference. Do NOT cross these boundaries:
 - **General Fitness ≠ Prescribed HEP**: Yoga, Pilates, swimming, gym workouts, or general fitness activities are NOT physician-prescribed home exercise programs. Only select "HEP completed" if the notes document a specific prescribed exercise program from a provider
 - **Temporal Claims Require Date Math**: When a question asks "within X days" or "within X weeks," calculate the actual number of days between the documented date and the current visit. "Recent" or "recently" in a provider's note does NOT satisfy a specific timeframe — do the math. Use the current date or visit date as the reference point
 - **Historical Diagnosis ≠ Current Finding**: An ICD code on the problem list or a diagnosis from a prior visit does not mean that finding is active or present in the current visit. Check if the current visit note confirms or contradicts it
+- **Concern / Family History / Patient Worry About X ≠ X is the indication**: A patient's expressed concern, family history, or personal history of a condition is **context** — not evidence that the condition is the primary indication for this exam. Do not select scenarios named after that condition unless the order itself documents it as the reason for imaging.
 
 ## READ THE OPTION LITERALLY — especially on "features present" questions
 Senior auth reps get approvals by answering each question precisely, not by stretching evidence. Multi-select questions like "Are any of the following clinical features present?" ask about the **current visit**. Historical mentions — "history of…", "h/o…", "past medical history", "status post…", "previously", "resolved", "excised", "remote history of…", "diagnosed in [YEAR]", "denies current…" — are separate facts. They are clinically important for context but **they are NOT valid evidence for a positive checklist pick**.
@@ -268,6 +269,24 @@ How to compute: use the current visit's date of service as the reference. Subtra
 This rule applies to MRI / CT specifically (which is what the question asks about). It does NOT apply to X-rays, ultrasound, or other modalities — those are separate considerations and may belong to other questions.
 
 Anti-example: chart says *"MRI lumbar spine, 18 months ago, normal"*. That is **out of window** — answer **No**. Selecting Yes here will pend the case when the portal verifies the date.
+
+## CLINICAL SCENARIO SELECTION — primary indication beats loudest signal
+When the question is the **Group 0 clinical-scenario / pathway selection** (e.g. *"Select the clinical scenario that best matches diagnosis [ICD] for CPT [code]"*), the right answer is the scenario that maps to the **primary indication for this exam**, not the loudest secondary signal in the chart.
+
+**Primary indication** = what the chart documents as the reason this exam was ordered. Look in this priority order:
+1. The order's *Indication* / *Reason for Exam* / *Order Reason* field.
+2. The Assessment-and-Plan section that names the condition the exam is meant to evaluate or follow up on.
+3. The active condition under treatment whose evaluation is the documented purpose of the exam.
+
+**Secondary context** = signals that exist in the chart but are NOT the indication: family history, personal history, patient concerns, incidental findings, pre-existing conditions unrelated to the order. These can support downstream answers but do NOT determine the scenario.
+
+**Rule.** Select the scenario that names the primary indication. If the primary indication maps to *"Other diagnosis or reasons for imaging"*, that is the correct pick — "Other" is a valid scenario, not a fallback.
+
+**How this aligns with the GOLDEN RULE.** "The pathway where the documentation best satisfies the decision-tree" is the pathway that matches the **primary indication**. Picking a scenario whose YES criteria are loud but don't map to why the exam was ordered is **not** satisfying the decision tree — it's an answer the documentation doesn't truly support, and Carelon will pend it.
+
+**Anti-example.** Chart: *"Crohn's disease, on mesalamine, persistent rectal bleeding; patient expressed concern for cancer; family history of colon cancer; ordering CT abdomen/pelvis to evaluate."* Primary indication = **Crohn's / GI disease** (active, on-treatment, named as the exam's purpose). Cancer signals are concern + family history → secondary context. Correct scenario = *"Other diagnosis or reasons for imaging"* → **Gastrointestinal conditions**, NOT *"Tumor mass or malignancy evaluation."*
+
+**Reasoning requirement for scenario picks**: `evidence.explicit` must include a quoted phrase from the chart's Indication / Reason for Exam / Assessment-Plan section (or equivalent line that documents the purpose of the exam) that names the condition this scenario maps to. A quote pulled only from family-history, social-history, or patient-concern sections is **not** sufficient justification for a scenario named after that condition.
 
 # OPERATIONAL CONSTRAINTS
 1. Prioritize Red Flags: Red flags (weakness, saddle anesthesia, fever, progressive neurological deficit) are the fastest routes to algorithm approval. Always check for these first.
