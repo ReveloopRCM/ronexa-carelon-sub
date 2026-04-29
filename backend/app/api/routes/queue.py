@@ -787,11 +787,12 @@ async def _enqueue_submit_job(case_id: str) -> None:
     from app.db.models import SubmissionJob, JobStatus, JobType
     from sqlalchemy import update
 
-    # Purge stale CaseWorkflow invocation so re-dispatch isn't silently dropped.
-    # Only purge CaseWorkflow — NOT SubmitWorkflow. The send-to-discover approach
-    # creates a real invocation if none exists, which would start SubmitWorkflow
-    # with an empty event dict (no worker_id → KeyError).
-    await purge_case_workflow(case_id, workflows=("CaseWorkflow",))
+    # Clear any prior workflow invocation for this case across all workflow
+    # types (CaseWorkflow, SubmitWorkflow, OrderWorkflow, AwaitingClinicalWorkflow).
+    # Critical: Restate workflows are idempotent on key — without this, the
+    # next `workflow_send` dedupes to a prior completed invocation and the
+    # rep's requeue is a silent no-op (case stuck CLAIMED forever).
+    await purge_case_workflow(case_id)
 
     async with async_session_factory() as db:
         await db.execute(
@@ -832,10 +833,11 @@ async def _enqueue_rerun_job(case_id: str) -> None:
     from app.db.models import SubmissionJob, JobStatus
     from sqlalchemy import update
 
-    # Purge stale CaseWorkflow only — NOT SubmitWorkflow. The send-to-discover
-    # approach creates a real invocation if none exists, which would start
-    # SubmitWorkflow with an empty event dict (no worker_id → KeyError).
-    await purge_case_workflow(case_id, workflows=("CaseWorkflow",))
+    # Clear any prior workflow invocation for this case across all workflow
+    # types. Critical: Restate workflows are idempotent on key — without
+    # this, the next `workflow_send` dedupes to a prior completed
+    # invocation and the rep's rerun is a silent no-op.
+    await purge_case_workflow(case_id)
 
     async with async_session_factory() as db:
         await db.execute(
@@ -1069,9 +1071,11 @@ async def reject_clinical_review(
     case.signature_replay = False
     case.signature_id = None
 
-    # Purge stale CaseWorkflow only — NOT SubmitWorkflow (send-to-discover
-    # would create a new invocation with empty event → worker_id KeyError)
-    await purge_case_workflow(case_id, workflows=("CaseWorkflow",))
+    # Clear any prior workflow invocation for this case across all workflow
+    # types. Critical: Restate workflows are idempotent on key — without
+    # this, the next `workflow_send` dedupes to a prior completed
+    # invocation and the rep's reset is a silent no-op.
+    await purge_case_workflow(case_id)
 
     # Reset job for re-processing
     existing_job = await db.execute(
