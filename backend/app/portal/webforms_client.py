@@ -166,7 +166,10 @@ class WebFormsClient:
         """Click 'I Agree' on the terms/agreement page."""
         logger.info("Accepting terms of use")
         try:
-            await self.page.wait_for_selector(SEL["agree_button"], timeout=10000)
+            # Post-login terms page — Carelon can take 15-25s to render
+            # under load. Bumped from 10s to 30s after observing wait_for_selector
+            # timeouts on this exact step in production (29 Apr 2026).
+            await self.page.wait_for_selector(SEL["agree_button"], timeout=30000)
             await self.behavior.click(SEL["agree_button"])
             await self.reader.wait_for_postback()
             return _ok()
@@ -327,9 +330,11 @@ class WebFormsClient:
         """
         logger.info("Extracting eligibility details from service category page")
 
-        # Wait for page to have member info loaded
+        # Wait for page to have member info loaded — eligibility page renders
+        # post-postback and has been observed to take 15-25s under Carelon load.
+        # Bumped from 10s to 30s; falls through to domcontentloaded on timeout.
         try:
-            await self.page.wait_for_selector("text=Effective", state="visible", timeout=10000)
+            await self.page.wait_for_selector("text=Effective", state="visible", timeout=30000)
         except Exception:
             await self.page.wait_for_load_state("domcontentloaded")
 
@@ -428,9 +433,10 @@ class WebFormsClient:
         """
         logger.info("Selecting Diagnostic Imaging service type")
 
-        # Wait for service category cards to load
+        # Wait for service category cards to load — post-navigation page,
+        # observed at 15-25s under Carelon load. Bumped from 10s → 30s.
         try:
-            await self.page.wait_for_selector("h3.card-title", state="visible", timeout=10000)
+            await self.page.wait_for_selector("h3.card-title", state="visible", timeout=30000)
         except Exception:
             await self.page.wait_for_load_state("domcontentloaded")
 
@@ -804,8 +810,10 @@ class WebFormsClient:
         """
         logger.info("Clicking Next on existing auths page")
         try:
-            # Wait for Next button to be available
-            await self.page.wait_for_selector(SEL["next_button"], state="visible", timeout=10000)
+            # Wait for Next button — existing-auths page renders post-postback
+            # and the button appears after the auth grid finishes loading. 10s
+            # was observed insufficient under Carelon load. Bumped → 30s.
+            await self.page.wait_for_selector(SEL["next_button"], state="visible", timeout=30000)
             await self.behavior.click(SEL["next_button"], action_type="buttonClick")
             await self.reader.wait_for_postback()
 
@@ -957,6 +965,15 @@ class WebFormsClient:
 
         # Click the selected provider's link
         try:
+            # The provider grid is rendered post-postback after the search
+            # submit and is one of Carelon's slower pages under load. Pre-wait
+            # explicitly so the 10s default inside `behavior.click` doesn't
+            # bite us before the grid finishes rendering.
+            await self.page.wait_for_selector(
+                "[id*='gvSearchProviders'] [id*='lnkBtnName']",
+                state="visible",
+                timeout=30000,
+            )
             # Build selector for the specific row
             if selected_index == 0:
                 # First result — use simple selector
@@ -1665,8 +1682,16 @@ class WebFormsClient:
         elif len(facilities) == 1:
             logger.info(f"Single facility result: {facilities[0].get('name')}")
 
-        # Click the selected facility's Select button
+        # Click the selected facility's Select button — same pattern as the
+        # provider grid above: the facility-results page renders post-search
+        # and is sometimes slow under Carelon load. Pre-wait so behavior.click's
+        # 10s default doesn't trip on a still-rendering page.
         try:
+            await self.page.wait_for_selector(
+                "[id*='gvSearchProviders'] [id*='cmdSelectFacility']",
+                state="visible",
+                timeout=30000,
+            )
             if selected_index == 0:
                 await self.behavior.click(
                     "[id*='gvSearchProviders'] [id*='cmdSelectFacility']",
@@ -1708,9 +1733,12 @@ class WebFormsClient:
         except Exception as e:
             logger.warning(f"Could not set fax hidden fields: {e}")
 
-        # Click Continue on facility confirmation page
+        # Click Continue on facility confirmation page — confirmed source of
+        # production HOLDs at the 10s boundary (29 Apr 2026: Norma Hill,
+        # Aditya Garg). Carelon's post-search confirmation page renders in
+        # 15-25s under load. Bumped from 10s → 30s.
         try:
-            await self.page.wait_for_selector(SEL["fac_continue"], timeout=10000)
+            await self.page.wait_for_selector(SEL["fac_continue"], timeout=30000)
             await self.behavior.click(SEL["fac_continue"], action_type="buttonClick")
             await self.reader.wait_for_postback()
         except Exception as e:

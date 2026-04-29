@@ -571,26 +571,77 @@ async def reap_stale_claims() -> int:
 
     Handles crash between claim_next_job and CaseWorkflow dispatch.
     Called from sync_engine during each sync cycle.
+
+    Layer 2 of the v138 permanent fix: a claim that never produced any
+    workflow activity (no `flow_check:*` audit event since claimed_at) means
+    the worker never reached the portal — typically a Restate dispatch
+    failure (RT0007 / ConnectionDoesNotExistError / etc.). Such a claim
+    should NOT burn the per-phase attempt budget. We decrement `attempt`
+    back when reaping so the next claim brings the case to the same
+    effective attempt level — net cost zero.
     """
     from app.db.database import async_session_factory
-    from app.db.models import SubmissionJob, JobStatus
-    from sqlalchemy import update
+    from app.db.models import SubmissionJob, JobStatus, AuditEvent
+    from sqlalchemy import select, update
 
     async with async_session_factory() as db:
-        stale = await db.execute(
-            update(SubmissionJob)
-            .where(
+        # Pick stale CLAIMED rows first so we can decide per-row whether the
+        # workflow actually ran (audit-event presence). This is one extra
+        # SELECT per stale claim — fine for typical batch sizes (≤ tens).
+        stale_rows = (await db.execute(
+            select(SubmissionJob).where(
                 SubmissionJob.status == JobStatus.CLAIMED,
                 SubmissionJob.claimed_at < datetime.utcnow() - timedelta(minutes=10),
             )
-            .values(status=JobStatus.QUEUED, claimed_by=None, claimed_at=None)
-            .returning(SubmissionJob.id)
-        )
-        reaped = stale.scalars().all()
-        if reaped:
-            logger.warning(f"Reaped {len(reaped)} stale CLAIMED jobs (>10 min)")
+        )).scalars().all()
+
+        if not stale_rows:
+            return 0
+
+        decremented = 0
+        for job in stale_rows:
+            ran = False
+            if job.claimed_at:
+                # Did any flow_check audit event land for this case after
+                # the claim was acquired? `mark_running` is not currently
+                # called from the workflow path, so we can't rely on
+                # `started_at`. The `flow_check:*` events fire from inside
+                # the worker's portal flow, so their presence proves the
+                # dispatch reached the portal.
+                hit = (await db.execute(
+                    select(AuditEvent.id)
+                    .where(
+                        AuditEvent.case_id == job.case_id,
+                        AuditEvent.action.like("flow_check:%"),
+                        AuditEvent.timestamp > job.claimed_at,
+                    )
+                    .limit(1)
+                )).scalar_one_or_none()
+                ran = hit is not None
+
+            job.status = JobStatus.QUEUED
+            job.claimed_by = None
+            job.claimed_at = None
+
+            if not ran and job.attempt > 0:
+                # Dispatch failure — refund the attempt. claim_next_job
+                # will re-increment on the next claim, so a real run that
+                # follows still bills correctly.
+                job.attempt = job.attempt - 1
+                decremented += 1
+
+        if decremented:
+            logger.warning(
+                f"Reaped {len(stale_rows)} stale CLAIMED jobs (>10 min); "
+                f"refunded attempt on {decremented} (no portal activity)"
+            )
+        else:
+            logger.warning(
+                f"Reaped {len(stale_rows)} stale CLAIMED jobs (>10 min)"
+            )
+
         await db.commit()
-        return len(reaped)
+        return len(stale_rows)
 
 
 async def fail_exhausted_jobs() -> int:
@@ -605,7 +656,7 @@ async def fail_exhausted_jobs() -> int:
     """
     from app.db.database import async_session_factory
     from app.db import repositories as repo
-    from app.db.models import Case, CaseState, SubmissionJob, JobStatus, ExceptionType
+    from app.db.models import Case, CaseState, SubmissionJob, JobStatus, ExceptionType, AuditEvent
     from sqlalchemy import select
 
     failed = 0
@@ -622,17 +673,37 @@ async def fail_exhausted_jobs() -> int:
         rows = result.all()
 
         for case, job in rows:
-            # Choose a hold_reason + case state that matches the job type so
-            # the existing rep workflows (HOLD review, manual requeue) keep
-            # working. FIRST_PASS / SIGNATURE_REPLAY exhaustion goes back to
-            # NOTES_UPLOADED so reps can re-upload notes / re-trigger; SUBMIT /
-            # ORDER exhaustion is HOLD with "verify in portal" because the
-            # case has likely partially submitted and needs a human eye.
-            hold_reason = (
-                f"{(job.job_type or 'job').replace('_', ' ').title()} attempts "
-                f"exhausted ({job.attempt}/{job.max_attempts}); "
-                f"verify in portal before re-submitting."
-            )
+            # Layer 3 of the v138 permanent fix: surface the latest real
+            # portal error (from the most recent auto_requeue audit event,
+            # which `mark_case_hold`'s transient-retry path writes) so reps
+            # see "Last portal error: ..." in the HOLD reason instead of a
+            # generic "attempts exhausted" message that throws away triage
+            # context.
+            last_requeue = (await db.execute(
+                select(AuditEvent)
+                .where(
+                    AuditEvent.case_id == case.id,
+                    AuditEvent.action == "auto_requeue",
+                )
+                .order_by(AuditEvent.timestamp.desc())
+                .limit(1)
+            )).scalar_one_or_none()
+            prior_reason = None
+            if last_requeue and isinstance(last_requeue.data, dict):
+                prior_reason = (last_requeue.data.get("transient_reason") or "").strip() or None
+
+            phase_label = (job.job_type or "job").replace("_", " ").title()
+            base = f"{phase_label} attempts exhausted ({job.attempt}/{job.max_attempts})"
+            if prior_reason:
+                # Truncate aggressively — Carelon error messages can be long
+                # multi-line tracebacks. 240 chars keeps the row readable
+                # while preserving the meaningful first sentence.
+                hold_reason = (
+                    f"{base}. Last portal error: {prior_reason[:240]} "
+                    f"Verify in portal before re-submitting."
+                )
+            else:
+                hold_reason = f"{base}; verify in portal before re-submitting."
 
             job.status = JobStatus.FAILED
             job.exception_type = ExceptionType.PORTAL_ERROR

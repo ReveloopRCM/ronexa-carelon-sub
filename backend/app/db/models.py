@@ -384,7 +384,12 @@ class SubmissionJob(Base):
 
     # Retry tracking
     attempt: Mapped[int] = mapped_column(Integer, default=0)
-    max_attempts: Mapped[int] = mapped_column(Integer, default=2)
+    # Per-phase max attempts. v138 bumped 2 → 3 after empirical evidence that
+    # Carelon's portal flakes (timeouts on slow page renders, transient
+    # postback hiccups) cluster around the 1-2 attempt range; 3 gives real
+    # buffer with the v138 timeout fix in place. The runaway-loop bound from
+    # v136 still applies (claim_next_job WHERE attempt < max_attempts).
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Timing
