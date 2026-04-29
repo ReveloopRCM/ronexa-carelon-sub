@@ -55,6 +55,7 @@ async def run(ctx: WorkflowContext, case_event: dict) -> dict:
         credentials = case_event.get("credentials")
         rerun_rep_answers = case_event.get("rerun_rep_answers")
         rerun_changed_group_id = case_event.get("rerun_changed_group_id")
+        rep_pathway_override_id = case_event.get("rep_pathway_override_id")
     except Exception as e:
         logger.error(f"CaseWorkflow/{case_id}: failed to parse event: {e}")
         return {"status": "error", "error": f"Bad event: {e}"}
@@ -70,6 +71,7 @@ async def run(ctx: WorkflowContext, case_event: dict) -> dict:
             clinical_context, auto_submit, credentials,
             rerun_rep_answers=rerun_rep_answers,
             rerun_changed_group_id=rerun_changed_group_id,
+            rep_pathway_override_id=rep_pathway_override_id,
         )
     except TerminalError:
         raise
@@ -95,6 +97,7 @@ async def _run_case_workflow(
     credentials: dict | None,
     rerun_rep_answers: list[dict] | None = None,
     rerun_changed_group_id: int | None = None,
+    rep_pathway_override_id: str | None = None,
 ) -> dict:
     """First pass only — no awakeable, no suspension."""
 
@@ -109,9 +112,15 @@ async def _run_case_workflow(
 
     from app.workflow.worker_session import run_first_pass
 
-    if rerun_rep_answers:
+    if rep_pathway_override_id:
         logger.info(
-            f"CaseWorkflow/{case_id}: RERUN with {len(rerun_rep_answers)} rep answers, "
+            f"CaseWorkflow/{case_id}: SCENARIO-CHANGE rerun — "
+            f"rep_pathway_override_id={rep_pathway_override_id}"
+        )
+    elif rerun_rep_answers:
+        logger.info(
+            f"CaseWorkflow/{case_id}: DOWNSTREAM-EDIT rerun with "
+            f"{len(rerun_rep_answers)} rep answers, "
             f"changed_group_id={rerun_changed_group_id}"
         )
 
@@ -125,6 +134,8 @@ async def _run_case_workflow(
     if rerun_rep_answers is not None:
         first_pass_arg["rerun_rep_answers"] = rerun_rep_answers
         first_pass_arg["rerun_changed_group_id"] = rerun_changed_group_id
+    if rep_pathway_override_id:
+        first_pass_arg["rep_pathway_override_id"] = rep_pathway_override_id
 
     try:
         first_pass_result = await ctx.object_call(
@@ -145,9 +156,15 @@ async def _run_case_workflow(
     # ── Save pathway metadata if present ──
     if first_pass_result.get("pathway"):
         from app.compiler.portal_compiler import _save_pathway_to_case
+        # If the rep's scenario override was honored by the portal, clear
+        # case.rep_pathway_override_id in the same UPDATE so the next rerun
+        # isn't re-forced. Idempotent with the worker-side call in
+        # http_server.process_case (both write the same row to the same
+        # values; whichever lands second is a no-op).
+        clear_override = bool(first_pass_result["pathway"].get("override_consumed"))
         await ctx.run(
             "save_pathway", _save_pathway_to_case,
-            args=(case_id, first_pass_result["pathway"]),
+            args=(case_id, first_pass_result["pathway"], clear_override),
         )
 
     # ── Non-review outcomes → return immediately ──

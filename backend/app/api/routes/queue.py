@@ -427,14 +427,25 @@ async def update_pathway(
     case.pathway_name = body.pathway_name
     case.pathway_id = body.pathway_id
 
+    # Durable single-source-of-truth for the rep's pathway intent. The next
+    # rerun reads this directly (independent of Question table state, which
+    # gets wiped by _save_question_batch each rerun) and the compiler
+    # deterministically forces the portal pathway to this id — no LLM call
+    # for pathway selection. The compiler clears it transactionally with
+    # `_save_pathway_to_case(clear_override=True)` once the portal confirms
+    # it accepted the override. See plan: scenario-change rerun is a
+    # clean-slate first pass against a new scenario.
+    case.rep_pathway_override_id = body.pathway_id
+
     # Flag that clinical scenario (GroupId=0) was changed — rerun will pick this up
     raw = dict(case.raw_data or {})
     raw["rerun_changed_group_id"] = 0
     case.raw_data = raw
 
-    # Update the pathway Question's rep_answer so reruns use the new pathway.
-    # worker_loop loads rep answers from Question records — without this,
-    # the compiler would use the OLD pathway_id from the original review.
+    # Mirror the rep's choice onto the pathway Question for UI display
+    # consistency. Functionally redundant with rep_pathway_override_id (the
+    # worker no longer reads this for the pathway), but keeps the review UI
+    # showing review_state=REP_EDITED until the rerun completes.
     pathway_q = await db.execute(
         select(Question)
         .where(Question.case_id == case.id)

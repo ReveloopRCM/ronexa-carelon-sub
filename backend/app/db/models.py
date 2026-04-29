@@ -219,6 +219,15 @@ class Case(Base):
     pathway_id: Mapped[str | None] = mapped_column(String, nullable=True)
     pathway_options: Mapped[list | None] = mapped_column(JSON, nullable=True)  # [{id, text}, ...]
 
+    # Rep override — when the rep changes the clinical scenario in review,
+    # the next rerun must deterministically force the portal pathway to this
+    # id (no LLM selection). Cleared by the compiler exactly when the
+    # override is honored. This is the single durable source of truth for
+    # the rep's intent — `pathway_id` above gets overwritten by every
+    # successful pathway selection, so it can't double as "what the rep
+    # wants." See `_save_pathway_to_case(clear_override=True)` for clearing.
+    rep_pathway_override_id: Mapped[str | None] = mapped_column(String, nullable=True)
+
     # Approval tracking — from clinical algorithm (RecommendationType) + IsBypassAndGoldCardState
     gold_card_level: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 0=none, 2=full bypass
     auto_approved: Mapped[bool | None] = mapped_column(Boolean, nullable=True)   # True when algorithm RecommendationType=3 (Approve)

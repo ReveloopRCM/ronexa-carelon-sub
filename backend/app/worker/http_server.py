@@ -73,10 +73,19 @@ async def process_case(event: dict) -> dict:
     # Rerun context (loaded from DB when rep changed answers)
     rerun_rep_answers = event.get("rerun_rep_answers")
     rerun_changed_group_id = event.get("rerun_changed_group_id")
+    # Scenario-change rerun: rep changed the clinical pathway. Compiler
+    # deterministically forces the portal pathway to this id (no LLM call)
+    # and runs a clean-slate question loop.
+    rep_pathway_override_id = event.get("rep_pathway_override_id")
 
-    if rerun_rep_answers:
+    if rep_pathway_override_id:
         logger.info(
-            f"Worker/{worker_id}: process-case RERUN for {case_id} "
+            f"Worker/{worker_id}: process-case SCENARIO-CHANGE rerun for {case_id} "
+            f"(override={rep_pathway_override_id})"
+        )
+    elif rerun_rep_answers:
+        logger.info(
+            f"Worker/{worker_id}: process-case DOWNSTREAM-EDIT rerun for {case_id} "
             f"({len(rerun_rep_answers)} rep answers, changed_group_id={rerun_changed_group_id})"
         )
     else:
@@ -101,6 +110,7 @@ async def process_case(event: dict) -> dict:
                             # finalize-case with dry_run=False to actually submit.
             resume_answers=rerun_rep_answers,
             changed_group_id=rerun_changed_group_id,
+            rep_pathway_override_id=rep_pathway_override_id,
             order_mode=order_mode,
         )
 
@@ -114,8 +124,17 @@ async def process_case(event: dict) -> dict:
         if result.get("pathway"):
             try:
                 from app.compiler.portal_compiler import _save_pathway_to_case
-                await _save_pathway_to_case(case_id, result["pathway"])
-                logger.info(f"Worker/{worker_id}: saved pathway '{result['pathway'].get('name')}' for {case_id}")
+                # If the rep overrode the pathway and the portal honored it
+                # (override_consumed=True), clear case.rep_pathway_override_id
+                # in the same UPDATE so the next rerun isn't re-forced.
+                clear_override = bool(result["pathway"].get("override_consumed"))
+                await _save_pathway_to_case(
+                    case_id, result["pathway"], clear_override=clear_override,
+                )
+                logger.info(
+                    f"Worker/{worker_id}: saved pathway '{result['pathway'].get('name')}' "
+                    f"for {case_id} (clear_override={clear_override})"
+                )
             except Exception as pw_err:
                 logger.warning(f"Worker/{worker_id}: pathway save failed (non-fatal): {pw_err}")
 

@@ -54,6 +54,7 @@ class PortalCompiler:
         clinical_context: dict | None = None,
         resume_answers: list[dict] | None = None,
         changed_group_id: int | None = None,
+        rep_pathway_override_id: str | None = None,
         dry_run: bool = False,
         order_mode: bool = False,
     ) -> dict:
@@ -70,17 +71,39 @@ class PortalCompiler:
             changed_group_id: If set, the GroupId the rep edited. The resume
                 path will backtrack (DeleteAssetsByGroupId for downstream groups)
                 and re-process from this point. None = approved (no backtrack).
+            rep_pathway_override_id: Set when the rep changed the clinical
+                scenario in review. Triggers a clean-slate first pass: the
+                pathway is deterministically forced to this id (no LLM call
+                for selection) and the question loop runs fresh against the
+                new scenario's question set. resume_answers is force-cleared
+                because answers from the prior pathway are stale by definition
+                (different scenario = different question tree).
             dry_run: If True, stop after facility_search — don't submit.
                 Use for testing the full flow without creating a real submission.
             order_mode: If True, use order-specific prompt templates for LLM
                 evaluation. The clinical_context contains order form data.
         """
+        # SCENARIO-CHANGE RERUN: rep changed clinical pathway. Force a
+        # clean-slate first pass — drop any resume_answers that may have
+        # been threaded through (they belong to the prior pathway's question
+        # tree and have no meaningful mapping to the new scenario's questions).
+        if rep_pathway_override_id:
+            if resume_answers or changed_group_id is not None:
+                logger.info(
+                    f"SCENARIO-CHANGE rerun (override={rep_pathway_override_id}): "
+                    f"clearing resume_answers (had {len(resume_answers or [])} entries) "
+                    f"and changed_group_id (was {changed_group_id}) — clean-slate pass"
+                )
+            resume_answers = None
+            changed_group_id = None
+
         result: dict[str, Any] = {}
         context_vars: dict[str, Any] = {
             "case": case,
             "provider_id": session.provider_id,
             "client_id": session.client_id,
             "order_mode": order_mode,
+            "_rep_pathway_override_id": rep_pathway_override_id,
         }
 
         # Shared clinical flow instance — initialized once, used by all clinical phases
@@ -269,10 +292,20 @@ class PortalCompiler:
         elif phase_id == "clinical_pathway":
             icd_code = case.get("icd1", "")
 
-            # For reruns: if the rep changed the clinical scenario (GroupId=0),
-            # use their chosen pathway_id instead of auto-selecting by ICD.
-            rep_pathway_id = None
-            if resume_answers:
+            # Pathway-selection priority:
+            # 1. rep_pathway_override_id from context — rep explicitly chose
+            #    a scenario; deterministic match, no LLM call.
+            # 2. (legacy) resume_answers Group 0 — older rerun path. Kept as
+            #    fallback for in-flight cases that pre-date the override field.
+            # 3. None — first pass; clinical_flow falls through to ICD match
+            #    + LLM selection.
+            rep_pathway_id = context_vars.get("_rep_pathway_override_id")
+            if rep_pathway_id:
+                logger.info(
+                    f"SCENARIO-CHANGE rerun: using override pathway_id={rep_pathway_id} "
+                    f"— deterministic set, no LLM selection"
+                )
+            elif resume_answers:
                 for ans in resume_answers:
                     qid = ans.get("QuestionId") or ans.get("question_id", "")
                     gid = ans.get("GroupId")
@@ -285,7 +318,7 @@ class PortalCompiler:
                             rep_pathway_id = vals[0]
                         elif isinstance(vals, str) and vals:
                             rep_pathway_id = vals
-                        logger.info(f"RE-RUN: using rep's pathway_id={rep_pathway_id}")
+                        logger.info(f"RE-RUN (legacy): using rep's pathway_id={rep_pathway_id}")
                         break
 
             r = await clinical_flow.select_pathway(
@@ -296,6 +329,23 @@ class PortalCompiler:
             if not r["ok"]:
                 return {"case_state": "HOLD", "hold_reason": r["message"]}
             pathway_data = r.get("data", {})
+
+            # Tag whether the override was honored, so _save_pathway_to_case
+            # can clear case.rep_pathway_override_id only on confirmed match.
+            override_id = context_vars.get("_rep_pathway_override_id")
+            if override_id:
+                if pathway_data.get("pathway_selected_id") == override_id:
+                    pathway_data["override_consumed"] = True
+                    logger.info(
+                        f"SCENARIO-CHANGE rerun: override {override_id} honored by portal "
+                        f"— will clear case.rep_pathway_override_id"
+                    )
+                else:
+                    logger.warning(
+                        f"SCENARIO-CHANGE rerun: override {override_id} NOT honored — "
+                        f"portal selected {pathway_data.get('pathway_selected_id')}. "
+                        f"Override stays set; rep will see the mismatch."
+                    )
             result.update(pathway_data)
 
             # Store pathway decision for inclusion in review questions.
@@ -1184,6 +1234,12 @@ class PortalCompiler:
                 "id": pw_dec["selected_id"],
                 "options": pw_dec["options"],
             }
+            # Propagate scenario-change override flag so the http_server /
+            # case_workflow caller knows to clear case.rep_pathway_override_id.
+            # Set in the clinical_pathway phase when pathway_selected_id matches
+            # the override id the rep submitted.
+            if result.get("override_consumed"):
+                result["pathway"]["override_consumed"] = True
             logger.info(
                 f"Pathway metadata: '{pw_dec['selected_name']}' "
                 f"from {len(pw_dec['options'])} options"
@@ -2020,26 +2076,42 @@ async def _save_order_question_batch(
             pass
 
 
-async def _save_pathway_to_case(case_id: str, pathway: dict) -> None:
+async def _save_pathway_to_case(
+    case_id: str,
+    pathway: dict,
+    clear_override: bool = False,
+) -> None:
     """Save pathway name/id to Case record as metadata.
 
     The pathway (clinical scenario) comes from GetPathwayOptions + SetPathway —
     a separate API call, NOT a question. Stored on the Case for display.
+
+    Args:
+        clear_override: When True, also clears `case.rep_pathway_override_id`
+            in the same UPDATE. Set this when the portal honored the rep's
+            scenario override (pathway.get("override_consumed") is True) so
+            the next rerun isn't re-forced to the same id. Leave False on
+            normal first passes and downstream-edit reruns.
     """
     from app.db.database import async_session_factory
     from sqlalchemy import update as sa_update
     from app.db.models import Case
 
+    values = {
+        "pathway_name": pathway.get("name"),
+        "pathway_id": pathway.get("id"),
+        "pathway_options": pathway.get("options"),  # [{id, text}, ...]
+    }
+    if clear_override:
+        values["rep_pathway_override_id"] = None
+
     async with async_session_factory() as db:
         await db.execute(
-            sa_update(Case).where(Case.id == case_id).values(
-                pathway_name=pathway.get("name"),
-                pathway_id=pathway.get("id"),
-                pathway_options=pathway.get("options"),  # [{id, text}, ...]
-            )
+            sa_update(Case).where(Case.id == case_id).values(**values)
         )
         await db.commit()
     logger.info(
         f"Saved pathway metadata for case {case_id}: {pathway.get('name')} "
-        f"({len(pathway.get('options', []))} options)"
+        f"({len(pathway.get('options', []))} options, "
+        f"clear_override={clear_override})"
     )

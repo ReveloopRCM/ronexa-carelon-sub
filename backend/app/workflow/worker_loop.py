@@ -194,6 +194,15 @@ async def start(ctx: ObjectContext, config: dict) -> dict:
                         f"{event.get('rerun_changed_group_id')})"
                     )
 
+                # Forward pathway override (scenario-change rerun) — compiler
+                # uses this to deterministically force the portal pathway.
+                if event.get("rep_pathway_override_id"):
+                    workflow_arg["rep_pathway_override_id"] = event["rep_pathway_override_id"]
+                    logger.info(
+                        f"WorkerLoop/{worker_id}: forwarding rep_pathway_override_id="
+                        f"{event['rep_pathway_override_id']} to CaseWorkflow"
+                    )
+
                 ctx.workflow_send(
                     case_workflow_run,
                     key=case_id,
@@ -393,8 +402,31 @@ async def _claim_and_build_event(worker_id: str, job_type: str | None = None) ->
         # Load rep answers for reruns (when changed_group_id is set in raw_data)
         rerun_rep_answers = None
         rerun_changed_group_id = None
+        rep_pathway_override_id = case.rep_pathway_override_id  # durable rep choice
         raw_data = case.raw_data or {}
-        if raw_data.get("rerun_changed_group_id") is not None and job.attempt > 0:
+
+        # SCENARIO-CHANGE RERUN: rep changed the clinical pathway. The new
+        # scenario will return a completely different question set from the
+        # portal — every prior rep answer (Group 1+) belonged to the OLD
+        # pathway and is stale by definition. Hand the compiler ONLY the
+        # override id; do NOT load resume_answers. The compiler short-circuits
+        # the pathway-selection LLM call and runs a clean-slate question loop.
+        if rep_pathway_override_id:
+            # Still pop the rerun flag so a subsequent dispatch (after the
+            # compiler clears the override) doesn't re-trigger.
+            if raw_data.get("rerun_changed_group_id") is not None:
+                raw_data_copy = dict(raw_data)
+                raw_data_copy.pop("rerun_changed_group_id", None)
+                case.raw_data = raw_data_copy
+            logger.info(
+                f"WorkerLoop/{worker_id}: SCENARIO-CHANGE rerun for {case.id} — "
+                f"rep_pathway_override_id={rep_pathway_override_id}, "
+                f"rerun_rep_answers suppressed (clean-slate pass)"
+            )
+        elif raw_data.get("rerun_changed_group_id") is not None and job.attempt > 0:
+            # DOWNSTREAM-EDIT RERUN: rep changed an answer in some non-zero
+            # group. Same scenario, same question tree — splice in rep
+            # answers via the existing resume_answers path.
             rerun_changed_group_id = raw_data["rerun_changed_group_id"]
             # Load all questions with rep_answer set
             q_result = await db.execute(
@@ -478,6 +510,11 @@ async def _claim_and_build_event(worker_id: str, job_type: str | None = None) ->
         if rerun_rep_answers is not None:
             event["rerun_rep_answers"] = rerun_rep_answers
             event["rerun_changed_group_id"] = rerun_changed_group_id
+
+        # Pathway override (scenario-change rerun) — independent of the
+        # rerun_rep_answers path; takes precedence in the compiler.
+        if rep_pathway_override_id:
+            event["rep_pathway_override_id"] = rep_pathway_override_id
 
         return event
 
