@@ -55,7 +55,25 @@ async def _list_invocations(
     service+key filter; the only correct way to find invocations by key is
     the SQL view `sys_invocation_status`. Returns a list of
     {id, target, status} dicts (possibly empty).
+
+    Implementation note: Restate's SQL endpoint runs DataFusion under the
+    hood and **does not support parameterized queries** ($1/$2 placeholders
+    or a `params` array). Sending those causes the server to close the
+    connection mid-request. We use literal string substitution. Workflow
+    names come from a fixed allowlist (_WORKFLOW_NAMES) and case_ids are
+    UUIDs from our DB, so there is no SQL-injection vector in practice.
     """
+    # Quote single-quotes inside the case_id (defense-in-depth — case_ids
+    # are UUIDs in production, but if a non-UUID ever sneaks through we
+    # don't want to break the query parser or open an injection path).
+    safe_case = case_id.replace("'", "''")
+    safe_wf = workflow.replace("'", "''")
+    query = (
+        f"SELECT id, target, status FROM sys_invocation_status "
+        f"WHERE target_service_name = '{safe_wf}' "
+        f"AND target_service_key = '{safe_case}'"
+    )
+
     try:
         resp = await client.post(
             f"{_ADMIN_URL}/query",
@@ -63,43 +81,11 @@ async def _list_invocations(
                 "Content-Type": "application/json",
                 "Accept": "application/json",
             },
-            json={
-                "query": (
-                    "SELECT id, target, status FROM sys_invocation_status "
-                    "WHERE target_service_name = $1 AND target_service_key = $2"
-                ),
-                "params": [workflow, case_id],
-            },
+            json={"query": query},
         )
     except Exception as e:
         logger.warning(f"_list_invocations: {workflow}/{case_id} query failed: {e}")
         return []
-
-    if resp.status_code != 200:
-        # Some versions of Restate's SQL query don't accept parameterized
-        # queries; fall back to literal string substitution. Safe here
-        # because workflow names come from a fixed allowlist and case_ids
-        # are UUIDs from our DB (no SQL-injection vector in practice).
-        try:
-            resp = await client.post(
-                f"{_ADMIN_URL}/query",
-                headers={
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                },
-                json={
-                    "query": (
-                        f"SELECT id, target, status FROM sys_invocation_status "
-                        f"WHERE target_service_name = '{workflow}' "
-                        f"AND target_service_key = '{case_id}'"
-                    ),
-                },
-            )
-        except Exception as e:
-            logger.warning(
-                f"_list_invocations: {workflow}/{case_id} fallback query failed: {e}"
-            )
-            return []
 
     if resp.status_code != 200:
         logger.warning(
