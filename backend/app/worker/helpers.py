@@ -194,8 +194,18 @@ async def mark_case_hold(case_id: str, hold_reason: str) -> None:
         can_retry = is_transient and current_attempt < max_attempts
 
         if can_retry and case and job:
-            # Auto-requeue: reset to NOTES_UPLOADED, increment attempt
-            case.state = CaseState.NOTES_UPLOADED
+            # Auto-requeue: reset case to the phase's "ready" state so the
+            # SAME worker type re-claims it. The state must match
+            # claim_next_job's filter for this job_type (ready_state_for is
+            # the canonical mapping; see db/queue.py).
+            #
+            # Historical bug (v138 → v142): this was hardcoded NOTES_UPLOADED
+            # for every job_type. SUBMIT / ORDER / SIGNATURE_REPLAY retries
+            # silently became unclaimable — case state didn't match its claim
+            # filter, job sat QUEUED forever (Adedeji 73723, Rivers 73218).
+            from app.db.queue import ready_state_for
+            retry_state = ready_state_for(job.job_type)
+            case.state = retry_state
             case.hold_reason = None
             job.status = JobStatus.QUEUED
             job.claimed_by = None
@@ -211,6 +221,8 @@ async def mark_case_hold(case_id: str, hold_reason: str) -> None:
                     "max_attempts": max_attempts,
                     "transient_reason": hold_reason,
                     "exception_type": exc_type.value,
+                    "retry_state": retry_state.value,
+                    "job_type": job.job_type,
                 },
             )
             await db.commit()

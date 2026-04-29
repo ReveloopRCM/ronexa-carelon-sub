@@ -886,15 +886,11 @@ async def reap_stale_processing() -> int:
                 job.claimed_by = None
                 job.claimed_at = None
 
-            # Reset case state based on job type
-            if job.job_type == "SUBMIT":
-                case.state = CaseState.SUBMITTING
-            elif job.job_type == "ORDER":
-                case.state = CaseState.ORDER_READY
-            elif job.job_type == "SIGNATURE_REPLAY":
-                case.state = CaseState.PENDING_NOTES
-            else:
-                case.state = CaseState.NOTES_UPLOADED
+            # Reset case state based on job type — sourced from the canonical
+            # PHASE_READY_STATE table (db/queue.py) so this stays in sync with
+            # claim_next_job's filter and mark_case_hold's auto_requeue path.
+            from app.db.queue import ready_state_for
+            case.state = ready_state_for(job.job_type)
 
             case.hold_reason = None
             recovered += 1

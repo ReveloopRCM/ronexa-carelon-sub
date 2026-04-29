@@ -115,6 +115,61 @@ async def enqueue_cases_bulk(
     return jobs
 
 
+# ── Phase contract: single source of truth for (job_type ↔ valid case states) ──
+#
+# This contract is the invariant that ties together three otherwise-independent
+# code paths:
+#
+#   1. claim_next_job (below) — filter that decides which (job_type, case_state)
+#      pairs a worker is allowed to claim.
+#   2. mark_case_hold auto_requeue (worker/helpers.py) — when a job hits a
+#      transient error and we want to retry, this is the state we reset
+#      case.state to so the same worker type re-claims it.
+#   3. reap_stale_processing (workflow/worker_loop.py) — when a case is stuck
+#      in PROCESSING after a crash, we translate it back to the phase's
+#      canonical "ready" state so the right worker re-claims it.
+#
+# Historically each of those three paths had its own copy of the rule. v138
+# introduced an `auto_requeue` path in (2) that hardcoded NOTES_UPLOADED for
+# every job_type, which silently broke SUBMIT/ORDER/SIGNATURE_REPLAY retries
+# (the case became unclaimable: state didn't match its claim filter, and the
+# job sat QUEUED forever). Tests (test_queue_contract.py) now enforce that
+# all three paths agree.
+
+# The "ready to run" state for each phase — what case.state should be when a
+# fresh job for that phase is waiting for a worker. Used by every retry/requeue
+# path that needs to put a case back in the queue.
+PHASE_READY_STATE: dict[str, CaseState] = {
+    JobType.FIRST_PASS.value:       CaseState.NOTES_UPLOADED,
+    JobType.SUBMIT.value:           CaseState.SUBMITTING,
+    JobType.ORDER.value:            CaseState.ORDER_READY,
+    JobType.SIGNATURE_REPLAY.value: CaseState.PENDING_NOTES,
+}
+
+# The set of states each phase's worker is allowed to CLAIM a case from.
+# Equals {ready_state, PROCESSING} for the three "long" phases — PROCESSING
+# is the post-crash recovery state that reap_stale_processing translates
+# back to ready_state. SIGNATURE_REPLAY accepts only PENDING_NOTES today
+# (its workflow doesn't transition through PROCESSING the same way).
+PHASE_CLAIM_STATES: dict[str, frozenset[CaseState]] = {
+    JobType.FIRST_PASS.value:       frozenset({CaseState.NOTES_UPLOADED, CaseState.PROCESSING}),
+    JobType.SUBMIT.value:           frozenset({CaseState.SUBMITTING,    CaseState.PROCESSING}),
+    JobType.ORDER.value:            frozenset({CaseState.ORDER_READY,   CaseState.PROCESSING}),
+    JobType.SIGNATURE_REPLAY.value: frozenset({CaseState.PENDING_NOTES}),
+}
+
+
+def ready_state_for(job_type: str | None) -> CaseState:
+    """Case state a transiently-failed job should be reset to on requeue.
+
+    The result MUST be in PHASE_CLAIM_STATES[job_type] (asserted by
+    test_queue_contract.py) — otherwise the case becomes unclaimable to
+    its worker after a transient retry. NOTES_UPLOADED is the safe default
+    for unknown / null job_types (FIRST_PASS-equivalent behavior).
+    """
+    return PHASE_READY_STATE.get(job_type or "", CaseState.NOTES_UPLOADED)
+
+
 # ── Claim / Release ──
 
 
@@ -151,32 +206,20 @@ async def claim_next_job(
         )
     )
 
-    # Filter by job_type + appropriate case state.
-    # PROCESSING is also accepted: a QUEUED job + PROCESSING case means
-    # the previous workflow attempt was abandoned (crash/restart). Safe to reclaim.
-    if job_type == "SUBMIT":
+    # Filter by job_type + appropriate case state, sourced from the canonical
+    # PHASE_CLAIM_STATES table above. PROCESSING is included for FIRST_PASS /
+    # SUBMIT / ORDER as the post-crash recovery state — a QUEUED job + a case
+    # stuck in PROCESSING means the previous workflow attempt was abandoned
+    # (crash/restart) and is safe to reclaim.
+    if job_type in PHASE_CLAIM_STATES:
         q = q.where(
-            SubmissionJob.job_type == "SUBMIT",
-            Case.state.in_((CaseState.SUBMITTING, CaseState.PROCESSING)),
-        )
-    elif job_type == "ORDER":
-        q = q.where(
-            SubmissionJob.job_type == "ORDER",
-            Case.state.in_((CaseState.ORDER_READY, CaseState.PROCESSING)),
-        )
-    elif job_type == "SIGNATURE_REPLAY":
-        q = q.where(
-            SubmissionJob.job_type == "SIGNATURE_REPLAY",
-            Case.state == CaseState.PENDING_NOTES,
-        )
-    elif job_type == "FIRST_PASS":
-        q = q.where(
-            SubmissionJob.job_type == "FIRST_PASS",
-            Case.state.in_((CaseState.NOTES_UPLOADED, CaseState.PROCESSING)),
+            SubmissionJob.job_type == job_type,
+            Case.state.in_(PHASE_CLAIM_STATES[job_type]),
         )
     else:
-        # Default: first pass only (backward compat)
-        q = q.where(Case.state.in_((CaseState.NOTES_UPLOADED, CaseState.PROCESSING)))
+        # Default (None / unknown): first-pass behavior — backward-compat with
+        # callers that don't pass job_type.
+        q = q.where(Case.state.in_(PHASE_CLAIM_STATES[JobType.FIRST_PASS.value]))
 
     if stat_only:
         q = q.where(SubmissionJob.is_stat == True)
