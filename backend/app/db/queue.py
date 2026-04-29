@@ -138,7 +138,17 @@ async def claim_next_job(
     q = (
         select(SubmissionJob)
         .join(Case, SubmissionJob.case_id == Case.id)
-        .where(SubmissionJob.status == JobStatus.QUEUED)
+        .where(
+            SubmissionJob.status == JobStatus.QUEUED,
+            # Stop the unbounded claim/reap loop: once a job has consumed all
+            # its attempts, we never re-claim it. The companion reaper
+            # `fail_exhausted_jobs()` (worker_loop.py) routes such jobs to a
+            # terminal FAILED + case HOLD with a rep-actionable reason. Without
+            # this guard, claim_next_job would keep incrementing `attempt`
+            # past max (we observed attempts of 65–73 in production) every
+            # time `reap_stale_claims` reset the row to QUEUED.
+            SubmissionJob.attempt < SubmissionJob.max_attempts,
+        )
     )
 
     # Filter by job_type + appropriate case state.

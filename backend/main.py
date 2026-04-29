@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 import logging
+import traceback
 
 import httpx
 from fastapi import FastAPI
@@ -11,37 +12,60 @@ from app.core.settings import settings
 logger = logging.getLogger(__name__)
 
 RESTATE_ADMIN_URL = settings.RESTATE_ADMIN_URL
-RESTATE_WORKER_URL = "http://localhost:9080"
+# Use the docker-compose service name so the URI is reachable from inside
+# Restate's container. `localhost:9080` was wrong here — from Restate's own
+# container, `localhost:9080` is its own loopback (Restate listens on 8080
+# admin / 9070-9071), so deployment discovery hit "Connection refused" on
+# every backend-api startup and flooded the runtime logs with META0003.
+# `restate-handler:9080` is the same service the deploy script registers
+# against, so they agree.
+RESTATE_WORKER_URL = "http://restate-handler:9080"
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Register Restate handler deployment on startup.
-    # All Restate services run on the orchestrator (localhost:9080).
-    # Worker VMs are plain HTTP servers reached via WorkerSession handlers.
-    async with httpx.AsyncClient() as client:
-        try:
-            resp = await client.post(
-                f"{RESTATE_ADMIN_URL}/deployments",
-                json={"uri": RESTATE_WORKER_URL, "force": True},
-                timeout=10.0,
-            )
-            if resp.status_code in (200, 201):
-                svcs = [s["name"] for s in resp.json().get("services", [])]
-                logger.info("Restate deployment registered (force=true): %s → %s", RESTATE_WORKER_URL, svcs)
-            else:
-                logger.warning("Restate registration returned %s: %s", resp.status_code, resp.text[:200])
-        except Exception as e:
-            logger.warning("Could not register Restate deployment: %s", e)
+    # Wrap the whole startup in a try/except so the underlying exception
+    # surfaces in the logs. Hypercorn otherwise just emits a generic
+    # "ASGI Framework Lifespan error, continuing without Lifespan support"
+    # warning, which hides whatever actually threw.
+    try:
+        # Register Restate handler deployment on startup.
+        # All Restate services run on the orchestrator's restate-handler
+        # container at 9080 within the ronexa_ronexa_net bridge network.
+        # Worker VMs are plain HTTP servers reached via WorkerSession handlers.
+        async with httpx.AsyncClient() as client:
+            try:
+                resp = await client.post(
+                    f"{RESTATE_ADMIN_URL}/deployments",
+                    json={"uri": RESTATE_WORKER_URL, "force": True},
+                    timeout=10.0,
+                )
+                if resp.status_code in (200, 201):
+                    svcs = [s["name"] for s in resp.json().get("services", [])]
+                    logger.info("Restate deployment registered (force=true): %s → %s", RESTATE_WORKER_URL, svcs)
+                else:
+                    logger.warning("Restate registration returned %s: %s", resp.status_code, resp.text[:200])
+            except Exception as e:
+                logger.warning("Could not register Restate deployment: %s", e)
 
-    # Start background poll scheduler
-    from app.ingest.poll_scheduler import start_poll_scheduler, stop_poll_scheduler
-    await start_poll_scheduler()
+        # Start background poll scheduler
+        from app.ingest.poll_scheduler import start_poll_scheduler, stop_poll_scheduler
+        await start_poll_scheduler()
+    except Exception as e:
+        # Log the full traceback so future startup failures aren't hidden
+        # behind hypercorn's generic Lifespan-error warning.
+        logger.error(
+            "Lifespan startup failed: %s\n%s", e, traceback.format_exc()
+        )
+        raise
 
     yield
 
     # Shutdown poll scheduler
-    await stop_poll_scheduler()
+    try:
+        await stop_poll_scheduler()
+    except Exception as e:
+        logger.error("Lifespan shutdown failed: %s\n%s", e, traceback.format_exc())
 
 
 app = FastAPI(title="Ronexa", version="0.1.0", lifespan=lifespan)

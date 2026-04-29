@@ -593,6 +593,151 @@ async def reap_stale_claims() -> int:
         return len(reaped)
 
 
+async def fail_exhausted_jobs() -> int:
+    """Mark jobs that have exhausted max_attempts as FAILED + case HOLD.
+
+    Called from sync_engine each cycle alongside the existing reapers. When
+    `claim_next_job` refuses to re-claim a job (because attempt >= max_attempts),
+    the row would otherwise sit silently QUEUED (or CLAIMED, just released by
+    `reap_stale_claims`). This routes it to the same terminal HOLD path
+    `mark_case_hold` produces, with an actionable hold_reason so reps see it
+    on the Worklist.
+    """
+    from app.db.database import async_session_factory
+    from app.db import repositories as repo
+    from app.db.models import Case, CaseState, SubmissionJob, JobStatus, ExceptionType
+    from sqlalchemy import select
+
+    failed = 0
+
+    async with async_session_factory() as db:
+        result = await db.execute(
+            select(Case, SubmissionJob)
+            .join(SubmissionJob, SubmissionJob.case_id == Case.id)
+            .where(
+                SubmissionJob.attempt >= SubmissionJob.max_attempts,
+                SubmissionJob.status.in_((JobStatus.QUEUED, JobStatus.CLAIMED)),
+            )
+        )
+        rows = result.all()
+
+        for case, job in rows:
+            # Choose a hold_reason + case state that matches the job type so
+            # the existing rep workflows (HOLD review, manual requeue) keep
+            # working. FIRST_PASS / SIGNATURE_REPLAY exhaustion goes back to
+            # NOTES_UPLOADED so reps can re-upload notes / re-trigger; SUBMIT /
+            # ORDER exhaustion is HOLD with "verify in portal" because the
+            # case has likely partially submitted and needs a human eye.
+            hold_reason = (
+                f"{(job.job_type or 'job').replace('_', ' ').title()} attempts "
+                f"exhausted ({job.attempt}/{job.max_attempts}); "
+                f"verify in portal before re-submitting."
+            )
+
+            job.status = JobStatus.FAILED
+            job.exception_type = ExceptionType.PORTAL_ERROR
+            job.exception_detail = hold_reason
+
+            if job.job_type in ("SUBMIT", "ORDER"):
+                case.state = CaseState.HOLD
+                case.hold_reason = hold_reason
+            elif job.job_type == "FIRST_PASS":
+                # Take it OUT of the queue without putting it on HOLD — reps
+                # can re-trigger it from the case detail. We still log the
+                # exhaustion event so it isn't silent.
+                case.state = CaseState.HOLD
+                case.hold_reason = hold_reason
+            elif job.job_type == "SIGNATURE_REPLAY":
+                case.state = CaseState.HOLD
+                case.hold_reason = hold_reason
+            else:
+                case.state = CaseState.HOLD
+                case.hold_reason = hold_reason
+
+            await repo.create_audit_event(
+                db, case_id=case.id, actor="system",
+                action="state_change:HOLD",
+                data={
+                    "state": "HOLD",
+                    "hold_reason": hold_reason,
+                    "exception_type": ExceptionType.PORTAL_ERROR.value,
+                    "attempts_exhausted": True,
+                    "attempt": job.attempt,
+                    "max_attempts": job.max_attempts,
+                    "job_type": job.job_type,
+                },
+            )
+            failed += 1
+            logger.warning(
+                f"fail_exhausted_jobs: case {case.id} job={job.job_type} "
+                f"attempt={job.attempt}/{job.max_attempts} → HOLD"
+            )
+
+        if failed:
+            await db.commit()
+
+    return failed
+
+
+async def reap_stale_submitting() -> int:
+    """Cases stuck in SUBMITTING with a SUBMIT job that never set started_at.
+
+    Symptom: Restate dispatch fails (revision pinning, runtime read-timeout,
+    network blip). Worker keeps claiming, `reap_stale_claims` keeps releasing
+    after 10 min, nothing finishes. Mirrors `reap_stale_processing` for the
+    SUBMITTING-state analog.
+
+    Behaviour:
+    - Job has a fresh attempt budget left → reset to QUEUED for another try.
+    - Job has hit max_attempts → leave for `fail_exhausted_jobs` next tick;
+      we don't double-up the HOLD transition.
+    """
+    from app.db.database import async_session_factory
+    from app.db.models import Case, CaseState, SubmissionJob, JobStatus
+    from sqlalchemy import select
+
+    recovered = 0
+
+    async with async_session_factory() as db:
+        result = await db.execute(
+            select(Case, SubmissionJob)
+            .join(SubmissionJob, SubmissionJob.case_id == Case.id)
+            .where(
+                Case.state == CaseState.SUBMITTING,
+                Case.updated_at < datetime.utcnow() - timedelta(minutes=15),
+                SubmissionJob.status.in_((JobStatus.QUEUED, JobStatus.CLAIMED, JobStatus.RUNNING)),
+            )
+        )
+        rows = result.all()
+
+        for case, job in rows:
+            # Hand off to fail_exhausted_jobs if the budget is gone — keeps
+            # the terminal-HOLD logic in one place.
+            if job.attempt >= job.max_attempts:
+                continue
+
+            # For RUNNING jobs require a longer staleness threshold than
+            # CLAIMED/QUEUED — running could be a real long submission.
+            if job.status == JobStatus.RUNNING:
+                stale_since = job.started_at or job.claimed_at or case.updated_at
+                if stale_since and stale_since > datetime.utcnow() - timedelta(minutes=30):
+                    continue
+
+            job.status = JobStatus.QUEUED
+            job.claimed_by = None
+            job.claimed_at = None
+            recovered += 1
+            logger.warning(
+                f"reap_stale_submitting: case {case.id} job={job.job_type}/"
+                f"{job.status.value} (attempt {job.attempt}/{job.max_attempts}) → QUEUED"
+            )
+
+        if recovered:
+            await db.commit()
+
+    return recovered
+
+
 async def reap_stale_processing() -> int:
     """Reset cases stuck in PROCESSING with QUEUED/RUNNING jobs.
 

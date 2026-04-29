@@ -516,6 +516,43 @@ curl -sf -X POST http://localhost:9070/deployments \
 ") || { log_warn "Restate registration may have failed"; return; }
   echo "  ${output}"
   log_ok "Restate registered"
+
+  # Deregister any stale deployments that aren't the current one. Restate
+  # keeps every deployment that ever registered, and in-flight invocations
+  # stay pinned to their original deployment's service revision. After a
+  # version bump, leftover old deployments cause RT0007/RT0010 errors when
+  # the runtime tries to invoke rev-N services against rev-N+M code. We
+  # extract the current deployment id from the registration output and
+  # force-delete every other deployment in the registry.
+  log_step "Pruning stale Restate deployments ..."
+  local current_id
+  current_id=$(printf '%s' "${output}" | sed -n 's/^ID: \([^,]*\),.*$/\1/p')
+  if [[ -z "${current_id}" || "${current_id}" == "?" ]]; then
+    log_warn "Could not parse current deployment id; skipping stale deployment cleanup"
+    return
+  fi
+  local pruned
+  pruned=$(run_on_orch "
+curl -sf http://localhost:9070/deployments 2>/dev/null | python3 -c \"
+import sys, json, urllib.request
+data = json.load(sys.stdin)
+current = '${current_id}'
+n = 0
+for d in data.get('deployments', []):
+    did = d.get('id')
+    if did and did != current:
+        req = urllib.request.Request(f'http://localhost:9070/deployments/{did}?force=true', method='DELETE')
+        try:
+            urllib.request.urlopen(req, timeout=10)
+            print(f'pruned {did} ({d.get(\\\"uri\\\", \\\"?\\\")})')
+            n += 1
+        except Exception as e:
+            print(f'WARN: failed to prune {did}: {e}', file=sys.stderr)
+print(f'pruned_total={n}')
+\" 2>&1
+") || { log_warn "Stale deployment prune failed"; return; }
+  echo "${pruned}" | sed 's/^/  /'
+  log_ok "Stale deployments pruned"
 }
 
 # ════════════════════════════════════════════════════════════════════

@@ -238,8 +238,16 @@ async def run_sync(
     workers_woken = 0
     stale_reaped = 0
     processing_reaped = 0
+    submitting_reaped = 0
+    exhausted_failed = 0
     try:
-        from app.workflow.worker_loop import wake_sleeping_workers, reap_stale_claims, reap_stale_processing
+        from app.workflow.worker_loop import (
+            wake_sleeping_workers,
+            reap_stale_claims,
+            reap_stale_processing,
+            reap_stale_submitting,
+            fail_exhausted_jobs,
+        )
 
         if inserted_case_ids or rerun_count:
             workers_woken = await wake_sleeping_workers()
@@ -249,6 +257,11 @@ async def run_sync(
         stale_reaped = await reap_stale_claims()
         # Reap PROCESSING cases with stale QUEUED/RUNNING jobs
         processing_reaped = await reap_stale_processing()
+        # Reap SUBMITTING cases stuck because Restate dispatch never landed
+        submitting_reaped = await reap_stale_submitting()
+        # Terminal-state any jobs that have exhausted their attempt budget
+        # (keeps the claim/reap loop bounded — see queue.py:claim_next_job)
+        exhausted_failed = await fail_exhausted_jobs()
     except Exception as e:
         logger.error(f"Worker wake/reap failed: {e}")
 
@@ -264,5 +277,7 @@ async def run_sync(
         "workers_woken": workers_woken,
         "stale_reaped": stale_reaped,
         "processing_reaped": processing_reaped,
+        "submitting_reaped": submitting_reaped,
+        "exhausted_failed": exhausted_failed,
         "clinicals_rerun": rerun_count,
     }
