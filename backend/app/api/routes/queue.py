@@ -802,7 +802,13 @@ async def _enqueue_submit_job(case_id: str) -> None:
                 job_type="SUBMIT",
                 claimed_by=None,
                 claimed_at=None,
-                attempt=SubmissionJob.attempt + 1,
+                # Phase transition: this is a fresh SUBMIT, not a retry of the
+                # previous FIRST_PASS. Reset the per-phase attempt budget so
+                # claim_next_job (which enforces attempt < max_attempts) gives
+                # the new phase its own runway. Without this reset, the
+                # carried-over count from FIRST_PASS triggered fail_exhausted_jobs
+                # the moment l2_submit landed — Bano cases 17372852 / 17372849.
+                attempt=0,
                 last_error=None,
                 started_at=None,
                 completed_at=None,
@@ -810,7 +816,7 @@ async def _enqueue_submit_job(case_id: str) -> None:
         )
         await db.commit()
 
-    logger.info(f"_enqueue_submit_job/{case_id}: job reset to QUEUED/SUBMIT")
+    logger.info(f"_enqueue_submit_job/{case_id}: job reset to QUEUED/SUBMIT (attempt=0)")
 
     # Wake all workers so submission workers check the queue
     await _wake_workers()
@@ -840,7 +846,11 @@ async def _enqueue_rerun_job(case_id: str) -> None:
                 job_type="FIRST_PASS",
                 claimed_by=None,
                 claimed_at=None,
-                attempt=SubmissionJob.attempt + 1,
+                # Same reasoning as _enqueue_submit_job: rerun is a fresh
+                # phase, not a retry of the original first pass. Reset the
+                # attempt budget so the new claim has runway against the
+                # claim_next_job bound (attempt < max_attempts).
+                attempt=0,
                 last_error=None,
                 started_at=None,
                 completed_at=None,
@@ -848,7 +858,7 @@ async def _enqueue_rerun_job(case_id: str) -> None:
         )
         await db.commit()
 
-    logger.info(f"_enqueue_rerun_job/{case_id}: job reset to QUEUED/FIRST_PASS")
+    logger.info(f"_enqueue_rerun_job/{case_id}: job reset to QUEUED/FIRST_PASS (attempt=0)")
 
     # Wake sleeping workers so they check the queue
     await _wake_workers()
@@ -986,12 +996,16 @@ async def confirm_clinical_review(
     )
     job = existing_job.scalar_one_or_none()
     if job:
-        # Re-use existing job, change to SUBMIT
+        # Re-use existing job, change to SUBMIT.
+        # Reset the per-phase attempt budget — see _enqueue_submit_job
+        # for the rationale (claim_next_job enforces attempt < max_attempts;
+        # carrying the FIRST_PASS count over kills the SUBMIT before it runs).
         from app.db.models import JobStatus
         job.job_type = "SUBMIT"
         job.status = JobStatus.QUEUED
         job.claimed_by = None
         job.claimed_at = None
+        job.attempt = 0
     else:
         new_job = SubmissionJob(
             case_id=case_id,
@@ -1065,11 +1079,16 @@ async def reject_clinical_review(
     )
     job = existing_job.scalar_one_or_none()
     if job:
+        # Reset per-phase attempt budget — same rationale as
+        # _enqueue_submit_job / _enqueue_rerun_job. clinical_review_rejected
+        # is a fresh phase the rep is initiating; the previous count is
+        # irrelevant.
         from app.db.models import JobStatus
         job.job_type = "FIRST_PASS"
         job.status = JobStatus.QUEUED
         job.claimed_by = None
         job.claimed_at = None
+        job.attempt = 0
 
     await repo.create_audit_event(
         db,
