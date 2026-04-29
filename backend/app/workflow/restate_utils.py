@@ -164,10 +164,12 @@ async def purge_case_workflow(
                     if not inv_id:
                         continue
 
-                    # Kill first (no-op on already-terminal). Don't fail hard
-                    # on 4xx — invocation may already be killed/completed.
+                    # Kill first (no-op on already-terminal). 409 = already
+                    # completed, treated as expected. The HTTP method here
+                    # is PATCH per Restate 1.6's admin OpenAPI (the older
+                    # code used DELETE which silently 4xx'd).
                     try:
-                        kill_resp = await client.post(
+                        kill_resp = await client.patch(
                             f"{_ADMIN_URL}/invocations/{inv_id}/kill",
                             timeout=10.0,
                         )
@@ -185,8 +187,10 @@ async def purge_case_workflow(
 
                     # Purge to remove the journal entry so future sends
                     # create a fresh invocation (not deduped to this one).
+                    # PATCH per OpenAPI; works on completed invocations
+                    # (which is the common case for HOLD-then-requeue).
                     try:
-                        purge_resp = await client.post(
+                        purge_resp = await client.patch(
                             f"{_ADMIN_URL}/invocations/{inv_id}/purge",
                             timeout=10.0,
                         )
