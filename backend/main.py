@@ -48,6 +48,25 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logger.warning("Could not register Restate deployment: %s", e)
 
+            # Boot the Reaper VO — single-instance periodic claim/processing
+            # sweeper, runs in Restate (not as a lifespan asyncio task) so it
+            # survives backend-api restarts and is observable / killable like
+            # any other Restate VO. Idempotent: Restate dedupes per-key sends.
+            # The handler bounds itself to ~24h then exits cleanly so the
+            # next backend-api startup re-triggers without unbounded queue.
+            try:
+                resp = await client.post(
+                    f"{settings.RESTATE_URL}/Reaper/main/start/send",
+                    json={},
+                    timeout=10.0,
+                )
+                if resp.status_code in (200, 201, 202):
+                    logger.info("Reaper started (POST /Reaper/main/start/send → %s)", resp.status_code)
+                else:
+                    logger.warning("Reaper start returned %s: %s", resp.status_code, resp.text[:200])
+            except Exception as e:
+                logger.warning("Could not start Reaper (non-fatal): %s", e)
+
         # Start background poll scheduler
         from app.ingest.poll_scheduler import start_poll_scheduler, stop_poll_scheduler
         await start_poll_scheduler()

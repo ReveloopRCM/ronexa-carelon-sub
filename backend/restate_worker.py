@@ -10,6 +10,7 @@ Services:
   - OrderWorkflow (Workflow, keyed by case_id) — first pass with order form only
   - WorkerLoop (VO, keyed by worker_id) — queue polling + dispatch
   - ExtractionService (Service, stateless) — parallel OCR extraction
+  - Reaper (VO, single key 'main') — periodic stale-claim/processing sweep
 """
 import asyncio
 import logging
@@ -23,6 +24,7 @@ from app.workflow.awaiting_clinical_workflow import awaiting_clinical_workflow
 from app.workflow.order_workflow import order_workflow
 from app.workflow.extraction_service import extraction_service
 from app.workflow.worker_loop import worker_loop
+from app.workflow.reaper import reaper
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -35,6 +37,7 @@ app = restate.app(services=[
     order_workflow,
     worker_loop,
     extraction_service,
+    reaper,
 ])
 
 if __name__ == "__main__":

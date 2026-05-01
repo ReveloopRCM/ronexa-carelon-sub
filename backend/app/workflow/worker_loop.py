@@ -625,10 +625,16 @@ async def reap_stale_claims() -> int:
         # Pick stale CLAIMED rows first so we can decide per-row whether the
         # workflow actually ran (audit-event presence). This is one extra
         # SELECT per stale claim — fine for typical batch sizes (≤ tens).
+        # Stale threshold: 5 min. With Reaper VO running every 2 min, max
+        # time-to-recovery for an orphaned claim is ~7 min worst case (5 min
+        # threshold + up to 2 min before next reap pass). Was 10 min when
+        # the only reaper rode along inside poll_scheduler at 15-min cadence
+        # (worst-case ~25 min before recovery — too slow, reps saw stuck
+        # cases for entire coffee breaks).
         stale_rows = (await db.execute(
             select(SubmissionJob).where(
                 SubmissionJob.status == JobStatus.CLAIMED,
-                SubmissionJob.claimed_at < datetime.utcnow() - timedelta(minutes=10),
+                SubmissionJob.claimed_at < datetime.utcnow() - timedelta(minutes=5),
             )
         )).scalars().all()
 

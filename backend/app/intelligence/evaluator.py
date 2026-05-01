@@ -10,6 +10,7 @@ Also provides match_answer() for submission step-through:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -379,10 +380,34 @@ async def decide_answer(
     # System prompt also from DB
     system = await get_evaluation_system_prompt(order_mode=order_mode)
 
-    try:
-        raw_text = await _call_llm(prompt, system)
-    except RuntimeError as e:
-        logger.error(f"All LLM providers failed: {e}")
+    # Retry-with-backoff around _call_llm. A 503 / connection-reset / timeout
+    # on a single call should NOT poison the whole question. _call_llm itself
+    # already tries Anthropic → Gemini once each; only RuntimeError from this
+    # function means BOTH providers errored. Try the whole pair up to 3 times
+    # with exponential backoff (1s, 2s) before falling through to the safe
+    # _fallback_decision path. Worst-case latency added: ~3s + provider call
+    # time, acceptable per question. Without this, the Elizabeth-Siddons
+    # symptom (Q3/Q4 came back as "Fallback: all LLM providers unavailable")
+    # leaks unreviewable answers into the rep queue.
+    raw_text = None
+    last_err: Exception | None = None
+    for attempt in range(3):
+        try:
+            raw_text = await _call_llm(prompt, system)
+            break
+        except RuntimeError as e:
+            last_err = e
+            logger.warning(
+                f"decide_answer: LLM attempt {attempt + 1}/3 failed for question "
+                f"{observation.question_id}: {str(e)[:200]}"
+            )
+            if attempt < 2:
+                await asyncio.sleep(2 ** attempt)  # 1s, then 2s
+    if raw_text is None:
+        logger.error(
+            f"decide_answer: all 3 LLM attempts exhausted for question "
+            f"{observation.question_id}; falling back. last error: {last_err}"
+        )
         return _fallback_decision(observation)
 
     # Strip markdown fences if present
