@@ -1812,7 +1812,19 @@ class WebFormsClient:
         return _ok(confirmation)
 
     async def _extract_confirmation(self) -> dict:
-        """Extract confirmation details from the result page."""
+        """Extract confirmation details from the result page.
+
+        Two-stage strategy:
+          1. Read the canonical DOM selectors. APPROVED outcomes typically
+             render with these populated.
+          2. If the status selector missed (common for PENDED outcomes where
+             Carelon renders the confirmation page with non-standard markup),
+             fall back to scanning the page body text for outcome keywords.
+             This recovers legitimate PENDED/APPROVED/DENIED outcomes that
+             would otherwise hit the "no confirmation captured" HOLD path
+             (commit 3b79b76 introduced the HOLD; without this body-text
+             fallback, any markup variation causes a false HOLD).
+        """
         selectors_map = {
             "order_id": SEL["conf_order_id"],
             "status": SEL["conf_status"],
@@ -1822,6 +1834,55 @@ class WebFormsClient:
         }
 
         result = await self.reader.read_multiple(selectors_map)
+
+        # Body-text fallback: status selector missed → scan page body for
+        # outcome keywords. The keyword scan is the same logic a rep would
+        # use looking at the page. Order matters — denied is more specific
+        # than just "review", and "pending review" is more specific than
+        # bare "pended".
+        if not result.get("status"):
+            try:
+                body = await self.page.evaluate(
+                    "() => document.body ? document.body.innerText : ''"
+                )
+            except Exception as e:
+                logger.warning(f"Confirmation body-scan: page.evaluate failed: {e}")
+                body = ""
+            body_lower = (body or "").lower()
+            for keyword, status_label in (
+                ("denied", "Denied"),
+                ("pending review", "Pending Review"),
+                ("pended", "Pended"),
+                ("in progress", "In Progress"),
+                ("approved", "Approved"),
+            ):
+                if keyword in body_lower:
+                    logger.info(
+                        f"Confirmation: status selector missed; "
+                        f"scraped '{status_label}' from page body text"
+                    )
+                    result["status"] = status_label
+                    result["status_source"] = "body_scan"
+                    break
+
+            # Try to scrape an order id via the body text too — Carelon
+            # prefixes them with "Order #", "Order Number", or "Reference
+            # Number". The captured group requires at least one digit
+            # (otherwise greedy matches grab e.g. the literal word "Number"
+            # from "Order Number: ORD-12345").
+            if not result.get("order_id"):
+                m = re.search(
+                    r"(?:order\s*(?:#|number)?|reference\s+number)"
+                    r"[:\s]*((?=[A-Z0-9-]*\d)[A-Z0-9-]{6,})",
+                    body or "", re.IGNORECASE,
+                )
+                if m:
+                    result["order_id"] = m.group(1)
+                    result["order_id_source"] = "body_scan"
+                    logger.info(
+                        f"Confirmation: order_id scraped from body: {m.group(1)}"
+                    )
+
         logger.info(f"Confirmation: Order={result.get('order_id')}, Status={result.get('status')}")
         return result
 

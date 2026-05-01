@@ -439,68 +439,107 @@ class PortalCompiler:
             result.update(r.get("data", {}))
 
             # Step 4: hdnAction=6 — transition from exam summary to facility search page
-            # HAR shows this transition can take 25-35 seconds — use 60s timeout
-            # Retry once if the page doesn't render (flaky portal transition)
-            max_hdn6_attempts = 2
+            # HAR shows this transition can take 25-35 seconds — use 60s timeout.
+            #
+            # The error-page-detection runs INSIDE the retry loop (not after).
+            # Carelon's "Page you requested cannot be displayed" comes back
+            # with HTTP 200 + `r["ok"]=True`, so we have to check the rendered
+            # DOM for it and re-attempt if so. Three attempts with progressive
+            # sleep budgets (5s, 12s) and a full page reload between attempts 2
+            # and 3, since consecutive postbacks can leave the form in a state
+            # only a clean reload recovers from.
+            max_hdn6_attempts = 3
+            hdn6_sleep_before = [0, 5, 12]   # cumulative pause before each attempt
+            landed_ok = False
+            last_page_state = None
+            last_failure = None
+
             for hdn6_attempt in range(1, max_hdn6_attempts + 1):
+                if hdn6_sleep_before[hdn6_attempt - 1]:
+                    await _asyncio.sleep(hdn6_sleep_before[hdn6_attempt - 1])
+
                 logger.info(
                     f"Transitioning: exam summary → facility search (hdnAction=6) "
                     f"[attempt {hdn6_attempt}/{max_hdn6_attempts}]"
                 )
                 r = await wf.postback_hdnaction(6, timeout_ms=60000)
-                if r["ok"]:
-                    break
-                if hdn6_attempt < max_hdn6_attempts:
+                if not r["ok"]:
+                    last_failure = f"postback failed: {r['message']}"
                     logger.warning(
-                        f"hdnAction=6 attempt {hdn6_attempt} failed: {r['message']} — retrying"
+                        f"hdnAction=6 attempt {hdn6_attempt}: {last_failure}"
                     )
-                    await _asyncio.sleep(3)
+                    if hdn6_attempt == 2:
+                        # Last-ditch reload before the third attempt — a clean
+                        # page state can recover when consecutive postbacks
+                        # fail.
+                        try:
+                            await session.page.reload(
+                                wait_until="domcontentloaded", timeout=30000
+                            )
+                            logger.info("hdnAction=6: page reloaded for last-ditch attempt")
+                        except Exception as reload_err:
+                            logger.warning(
+                                f"hdn6 reload between attempts failed (non-fatal): "
+                                f"{reload_err}"
+                            )
                     continue
-                return {"case_state": "HOLD", "hold_reason": f"Failed to transition to facility search: {r['message']}"}
 
-            await _asyncio.sleep(2)
+                # Postback returned ok — check whether we actually landed on
+                # the facility search page or on Carelon's error layout.
+                await _asyncio.sleep(2)
+                try:
+                    await session.page.screenshot(path="/tmp/ronexa_facility_page.png")
+                except Exception:
+                    pass
 
-            try:
-                await session.page.screenshot(path="/tmp/ronexa_facility_page.png")
-            except Exception:
-                pass
+                page_state = await session.page.evaluate("""() => ({
+                    url: window.location.href,
+                    bodySnippet: document.body.innerText.substring(0, 300),
+                    hasFacilitySearch: document.body.innerText.toLowerCase().includes('facility') ||
+                                       !!document.querySelector('[id*="lbProviderSearchAdvanced"]'),
+                    hasAdvancedSearch: !!document.querySelector('[id*="lbProviderSearchAdvanced"]'),
+                })""")
+                last_page_state = page_state
+                logger.info(f"After hdnAction=6 attempt {hdn6_attempt}: {page_state}")
 
-            # Diagnose the page we landed on
-            page_state = await session.page.evaluate("""() => ({
-                url: window.location.href,
-                bodySnippet: document.body.innerText.substring(0, 300),
-                hasFacilitySearch: document.body.innerText.toLowerCase().includes('facility') ||
-                                   !!document.querySelector('[id*="lbProviderSearchAdvanced"]'),
-                hasAdvancedSearch: !!document.querySelector('[id*="lbProviderSearchAdvanced"]'),
-            })""")
-            logger.info(f"After hdnAction=6: {page_state}")
-
-            # Defensive: detect Carelon's generic "Page Not Available" error
-            # page. If we got redirected there (instead of the facility
-            # search page), bail out with an honest hold reason. Otherwise
-            # the downstream `search_facility()` will eat a misleading 10 s
-            # `wait_for_selector` timeout on `lbProviderSearchAdvanced` and
-            # surface the wrong error to reps.
-            body = (page_state.get("bodySnippet") or "").lower()
-            on_error_page = (
-                "page you requested cannot be displayed" in body
-                or "temporarily unavailable" in body
-                or (not page_state.get("hasFacilitySearch")
-                    and not page_state.get("hasAdvancedSearch"))
-            )
-            if on_error_page:
-                logger.warning(
-                    f"hdnAction=6 landed on Carelon error page. "
-                    f"URL={page_state.get('url')} body={body[:200]!r}"
+                body = (page_state.get("bodySnippet") or "").lower()
+                on_error_page = (
+                    "page you requested cannot be displayed" in body
+                    or "temporarily unavailable" in body
+                    or (not page_state.get("hasFacilitySearch")
+                        and not page_state.get("hasAdvancedSearch"))
                 )
+                if not on_error_page:
+                    landed_ok = True
+                    break
+
+                last_failure = "Carelon error page"
+                logger.warning(
+                    f"hdnAction=6 attempt {hdn6_attempt}: landed on Carelon error page "
+                    f"(URL={page_state.get('url')!r}, body={body[:200]!r})"
+                )
+                if hdn6_attempt == 2:
+                    try:
+                        await session.page.reload(
+                            wait_until="domcontentloaded", timeout=30000
+                        )
+                        logger.info("hdnAction=6: page reloaded for last-ditch attempt")
+                    except Exception as reload_err:
+                        logger.warning(
+                            f"hdn6 reload between attempts failed (non-fatal): "
+                            f"{reload_err}"
+                        )
+
+            if not landed_ok:
                 return {
                     "case_state": "HOLD",
                     "hold_reason": (
                         "Carelon returned an error page after exam summary → "
-                        "facility transition. Submission state likely incomplete "
-                        "— check compiler logs for the prior phase."
+                        "facility transition (3 attempts). Submission state likely "
+                        "incomplete — check compiler logs for the prior phase."
                     ),
-                    "hdnaction6_page_state": page_state,
+                    "hdnaction6_page_state": last_page_state,
+                    "hdnaction6_last_failure": last_failure,
                 }
 
         else:
@@ -1178,18 +1217,72 @@ class PortalCompiler:
                         )
 
                         if not match.matched:
+                            # Tier 3 — live LLM evaluation against the case's
+                            # clinical_context. Same pipeline FIRST_PASS uses
+                            # for new questions. Catches the "portal asked a
+                            # new clinical question during pend re-validation"
+                            # path (Acuna 17394139 scoliosis question) and the
+                            # "saved_answers empty after pathway change"
+                            # degenerate path (Huang 17395435).
                             logger.warning(
-                                f"Submit step-through: UNMATCHED question — "
+                                f"Submit step-through: matcher missed "
                                 f"Q={q_id[:12]}... text='{question_text[:80]}' "
-                                f"reason={match.reasoning}"
+                                f"reason={match.reasoning} — falling back to "
+                                f"live LLM evaluation"
                             )
-                            return {
-                                "case_state": "HOLD",
-                                "hold_reason": (
-                                    f"Unmatched question during submission: "
-                                    f"{question_text[:100]}"
-                                ),
+                            from app.intelligence.evaluator import decide_answer
+                            from app.intelligence.models import PortalObservation
+
+                            observation = PortalObservation(
+                                question_id=q_id,
+                                group_id=int(group_id) if group_id is not None else 0,
+                                question_text=question_text,
+                                question_type=int(question_type),
+                                options=options,
+                                cpt_code=case.get("cpt_code", ""),
+                                sequence=q.get("Sequence", 0),
+                                icd1=case.get("icd1"),
+                                carrier_id=case.get("carrier_id"),
+                            )
+                            decision = await decide_answer(
+                                observation, clinical_context or {},
+                            )
+                            # Reject low-confidence decisions — better to HOLD
+                            # for rep review than submit a guess.
+                            if decision.confidence < 50:
+                                logger.warning(
+                                    f"Submit live-eval low confidence "
+                                    f"({decision.confidence}); HOLD for rep review"
+                                )
+                                return {
+                                    "case_state": "HOLD",
+                                    "hold_reason": (
+                                        f"Live LLM evaluation low confidence "
+                                        f"({decision.confidence:.0f}%) for portal "
+                                        f"question: {question_text[:100]}"
+                                    ),
+                                }
+                            logger.info(
+                                f"Submit live-eval: conf={decision.confidence} "
+                                f"answer={decision.answer_value} Q={q_id[:8]}..."
+                            )
+                            # Coerce decision into the saved-answer shape +
+                            # add to accumulator like a regular matched answer.
+                            decision_values = (
+                                decision.answer_value
+                                if isinstance(decision.answer_value, list)
+                                else [decision.answer_value]
+                            )
+                            answer_dict = {
+                                "QuestionId": q_id,
+                                "QuestionType": int(question_type),
+                                "GroupId": int(group_id) if group_id is not None else 0,
+                                "Sequence": q.get("Sequence", 0),
+                                "Values": decision_values,
                             }
+                            accumulator.add(answer_dict)
+                            batch_answers.append(answer_dict)
+                            continue   # next question in this batch
 
                         logger.info(
                             f"Submit match: {match.match_type} "
