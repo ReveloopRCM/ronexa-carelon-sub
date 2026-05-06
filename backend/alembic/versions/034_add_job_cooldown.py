@@ -14,8 +14,12 @@ NULL = immediately claimable (existing behavior). claim_next_job's WHERE
 clause adds `(cooldown_until IS NULL OR cooldown_until <= NOW())`.
 
 Revision ID: 034
-Revises: 033
+Revises: 032
 Create Date: 2026-05-06
+
+(Note: revision 033 was planned for an earlier-iteration SOAP-section
+validator gate that was scrapped before commit. We chain directly off
+032 — the latest revision actually present in production.)
 """
 from typing import Sequence, Union
 
@@ -23,7 +27,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision: str = "034"
-down_revision: Union[str, None] = "033"
+down_revision: Union[str, None] = "032"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
