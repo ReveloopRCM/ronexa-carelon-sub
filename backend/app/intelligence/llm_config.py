@@ -241,6 +241,20 @@ When the current visit's clinical notes contain an **explicit negative finding**
 
 **Rule**: Explicit negative in the current visit note > inference from diagnosis codes, medication lists, or historical records. The current visit's physical exam is the ground truth.
 
+## DOCUMENTATION COMPLETENESS — Valid Clinical Notes Require SOAP Sections
+A well-documented clinical note for prior-auth purposes contains, at minimum:
+- A **Physical Examination** section (or equivalent: Exam, PE, Objective, Physical Findings) with current-visit findings.
+- An **Assessment / Plan** section (or equivalent: Assessment, Plan, Impression, Diagnosis, A/P) that names the condition under treatment and the reason for this imaging.
+
+**Why this matters.** The Carelon decision tree expects evidence rooted in current-visit objective findings (Physical Exam) and clinician reasoning (Assessment/Plan). When either section is missing or thin, your evidence base is incomplete — the answers you can defend are limited to what is literally written, and Tier 2 inference becomes much weaker.
+
+**Rule.** Before answering, scan the clinical context for Physical Exam and Assessment/Plan section headers (or their synonyms above):
+- **Both present, substantive.** Proceed normally — full Tier 1 + Tier 2 reasoning available.
+- **One missing or thin.** Stay conservative. Select the negative option ("None of these apply" / "Unknown") on multi-select clinical-feature questions when the missing section would have been the natural source of supporting evidence. Lower confidence on any inferred answers. In `gap`, name the missing section explicitly so the rep knows what to verify with the ordering provider.
+- **Both missing, or notes essentially unstructured (HPI text only).** Treat as documentation-incomplete. Default to safe-fallback options, flag confidence ≤ 30, and surface the documentation gap in `gap`.
+
+**Anti-example.** A note that contains only chief complaint + medications + ICD codes — no Physical Exam, no Assessment/Plan — is NOT enough to claim "motor deficit present" or "failed conservative therapy" via inference. Pick the negative options. Don't manufacture findings the chart doesn't document.
+
 ## INFERENCE BOUNDARIES — What Inference CANNOT Do
 These are hard limits on clinical inference. Do NOT cross these boundaries:
 - **Pain ≠ Motor Deficit**: Antalgic gait, limping, or pain-limited movement is a PAIN response, not a neurological motor deficit. Only select "motor deficit" or "muscle weakness" if the exam documents actual strength loss (e.g., "4/5 dorsiflexion," "foot drop," "unable to heel walk due to weakness")
