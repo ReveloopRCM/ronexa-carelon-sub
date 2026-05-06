@@ -822,6 +822,9 @@ export default function SettingsPage() {
             </div>
           </div>
 
+          {/* Reaper Service */}
+          <ReaperServicePanel showMessage={showMessage} />
+
           {/* Sync History */}
           <div className="border rounded-lg p-5">
             <h2 className="font-semibold text-lg mb-3">Sync History</h2>
@@ -1925,6 +1928,157 @@ function AutomationRulesSection({ showMessage }: { showMessage: (text: string, t
         </div>
       ) : (
         <p className="text-sm text-gray-400">No automation rules yet. Add a CPT+ICD combo above.</p>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Reaper Service Panel — manual start/stop/status for the periodic claim
+// reaper Restate VO. The Reaper auto-starts on backend-api lifespan, but
+// ops sometimes need to stop it (maintenance) or force-restart it (after
+// a stuck-claim incident). Mirrors the pattern of the Worker controls
+// above but lives in its own panel because it's a system-level service.
+// ─────────────────────────────────────────────────────────────────────────
+
+type ReaperStatus = {
+  running: boolean;
+  active_count: number;
+  invocations: { id: string; status: string; created_at: string | null }[];
+};
+
+function ReaperServicePanel({
+  showMessage,
+}: {
+  showMessage: (text: string, type: "success" | "error") => void;
+}) {
+  const [status, setStatus] = useState<ReaperStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = async () => {
+    try {
+      const { reaperStatus } = await import("@/lib/api");
+      const s = await reaperStatus();
+      setStatus(s);
+    } catch (err: any) {
+      showMessage(`Reaper status: ${err.message}`, "error");
+    }
+  };
+
+  useEffect(() => {
+    refresh();
+    const t = setInterval(refresh, 30000); // refresh every 30s
+    return () => clearInterval(t);
+  }, []);
+
+  const handleStart = async () => {
+    setBusy(true);
+    try {
+      const { startReaper } = await import("@/lib/api");
+      const result = await startReaper();
+      if (result.status === "started") {
+        showMessage("Reaper started", "success");
+      } else {
+        showMessage(`Reaper start: HTTP ${result.http_code}`, "error");
+      }
+      await refresh();
+    } catch (err: any) {
+      showMessage(`Reaper start failed: ${err.message}`, "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleStop = async () => {
+    if (!confirm("Cancel all active Reaper invocations? backend-api will re-trigger it on next restart.")) return;
+    setBusy(true);
+    try {
+      const { stopReaper } = await import("@/lib/api");
+      const result = await stopReaper();
+      const n = result.cancelled.length;
+      const errN = (result.errors || []).length;
+      showMessage(
+        `Reaper stop: cancelled ${n}${errN ? `, ${errN} errors` : ""}`,
+        errN ? "error" : "success",
+      );
+      await refresh();
+    } catch (err: any) {
+      showMessage(`Reaper stop failed: ${err.message}`, "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const stateLabel = (s: string) => {
+    const lower = (s || "").toLowerCase();
+    if (lower === "invoked") return "Running";
+    if (lower === "suspended") return "Sleeping (between sweeps)";
+    if (lower === "inboxed") return "Queued";
+    if (lower === "completed") return "Completed";
+    return s || "Unknown";
+  };
+
+  return (
+    <div className="border rounded-lg p-5">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="font-semibold text-lg">Reaper Service</h2>
+        <span
+          className={
+            status?.running
+              ? "px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800"
+              : "px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-700"
+          }
+        >
+          {status?.running ? `Active (${status.active_count})` : "Not running"}
+        </span>
+      </div>
+      <p className="text-xs text-gray-500 mb-3">
+        Periodic sweeper for stuck CLAIMED / PROCESSING / SUBMITTING jobs. Runs every 2 minutes.
+        Auto-starts on backend-api boot. Use <span className="font-mono">Stop</span> for maintenance,
+        <span className="font-mono"> Start</span> to force-trigger after an incident.
+      </p>
+      <div className="flex gap-2 mb-3">
+        <button
+          onClick={handleStart}
+          disabled={busy}
+          className="px-3 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:opacity-50"
+        >
+          Start
+        </button>
+        <button
+          onClick={handleStop}
+          disabled={busy || !status?.running}
+          className="px-3 py-1.5 bg-red-600 text-white rounded text-sm hover:bg-red-700 disabled:opacity-50"
+        >
+          Stop
+        </button>
+        <button
+          onClick={refresh}
+          disabled={busy}
+          className="px-3 py-1.5 bg-gray-200 text-gray-700 rounded text-sm hover:bg-gray-300 disabled:opacity-50"
+        >
+          Refresh
+        </button>
+      </div>
+      {status && status.invocations.length > 0 && (
+        <table className="w-full text-xs border-t pt-2">
+          <thead>
+            <tr className="text-left text-gray-500">
+              <th className="pb-1 font-medium">Invocation ID</th>
+              <th className="pb-1 font-medium">State</th>
+              <th className="pb-1 font-medium">Started</th>
+            </tr>
+          </thead>
+          <tbody>
+            {status.invocations.map((inv) => (
+              <tr key={inv.id} className="border-t">
+                <td className="py-1 font-mono text-[10px]">{inv.id}</td>
+                <td className="py-1">{stateLabel(inv.status)}</td>
+                <td className="py-1 text-gray-500">{inv.created_at || "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
     </div>
   );

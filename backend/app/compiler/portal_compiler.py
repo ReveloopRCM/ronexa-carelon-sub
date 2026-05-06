@@ -897,6 +897,7 @@ class PortalCompiler:
             # Map portal confirmation fields to workflow-expected keys:
             #   order_id → portal_case_id, auth_number
             #   status → determination_status
+            #   determination_date → determination_date (Anticipated Det Date)
             if data.get("order_id"):
                 data["portal_case_id"] = data["order_id"]
                 data["auth_number"] = data["order_id"]
@@ -908,6 +909,9 @@ class PortalCompiler:
                     data["denial_reason"] = data["status"]
                 elif "pend" in status_lower or "in progress" in status_lower or "review" in status_lower:
                     data["pend_reason"] = data["status"]
+            # determination_date pass-through is implicit via result.update(data)
+            # (data["determination_date"] is set inside _extract_confirmation
+            # via the body-regex scan).
             result.update(data)
             logger.info(
                 f"Submission result: order_id={data.get('order_id')}, "

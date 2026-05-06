@@ -1835,20 +1835,31 @@ class WebFormsClient:
 
         result = await self.reader.read_multiple(selectors_map)
 
+        # Page body text — fetched lazily once per call. None until we need
+        # it. Multiple downstream branches (status fallback, order_id
+        # fallback, determination_date scan) all share this single fetch.
+        body: str | None = None
+
+        async def _get_body() -> str:
+            nonlocal body
+            if body is not None:
+                return body
+            try:
+                body = await self.page.evaluate(
+                    "() => document.body ? document.body.innerText : ''"
+                ) or ""
+            except Exception as e:
+                logger.warning(f"Confirmation body-scan: page.evaluate failed: {e}")
+                body = ""
+            return body
+
         # Body-text fallback: status selector missed → scan page body for
         # outcome keywords. The keyword scan is the same logic a rep would
         # use looking at the page. Order matters — denied is more specific
         # than just "review", and "pending review" is more specific than
         # bare "pended".
         if not result.get("status"):
-            try:
-                body = await self.page.evaluate(
-                    "() => document.body ? document.body.innerText : ''"
-                )
-            except Exception as e:
-                logger.warning(f"Confirmation body-scan: page.evaluate failed: {e}")
-                body = ""
-            body_lower = (body or "").lower()
+            body_lower = (await _get_body()).lower()
             for keyword, status_label in (
                 ("denied", "Denied"),
                 ("pending review", "Pending Review"),
@@ -1874,7 +1885,7 @@ class WebFormsClient:
                 m = re.search(
                     r"(?:order\s*(?:#|number)?|reference\s+number)"
                     r"[:\s]*((?=[A-Z0-9-]*\d)[A-Z0-9-]{6,})",
-                    body or "", re.IGNORECASE,
+                    (await _get_body()), re.IGNORECASE,
                 )
                 if m:
                     result["order_id"] = m.group(1)
@@ -1883,52 +1894,111 @@ class WebFormsClient:
                         f"Confirmation: order_id scraped from body: {m.group(1)}"
                     )
 
-        logger.info(f"Confirmation: Order={result.get('order_id')}, Status={result.get('status')}")
+        # Anticipated Determination Date — separate from valid_from (which is
+        # "Scheduled Date of Service"). Body regex scan against the literal
+        # label Carelon renders. This is the date the rep cares about for
+        # PENDED outcomes — when Carelon expects to render the auth decision.
+        # We always run this regex (even when other selectors hit) because
+        # there's no DOM selector for this field today; the body text label
+        # is the most stable extraction surface. APPROVED outcomes typically
+        # don't show this label (decision is already rendered), so the regex
+        # cleanly returns no match and determination_date stays NULL.
+        if not result.get("determination_date"):
+            m = re.search(
+                r"anticipated\s+determination\s+date\s*[:.]?\s*(\d{1,2}/\d{1,2}/\d{2,4})",
+                (await _get_body()), re.IGNORECASE,
+            )
+            if m:
+                result["determination_date"] = m.group(1)
+                logger.info(
+                    f"Confirmation: determination_date scraped from body: {m.group(1)}"
+                )
+
+        logger.info(
+            f"Confirmation: Order={result.get('order_id')}, "
+            f"Status={result.get('status')}, "
+            f"DeterminationDate={result.get('determination_date')}"
+        )
         return result
 
     async def detect_submission_error(self) -> dict | None:
         """Scan the page after Submit for a blocking modal / error layout.
 
-        Returns None when the page looks like a normal confirmation page
-        (detector should NOT short-circuit the happy path). Otherwise
-        returns a dict:
+        Two-pass strategy: probe immediately, and if nothing matches, wait
+        briefly and probe again. Carelon's duplicate-order modal can render
+        1-2 seconds AFTER the postback completes (jQuery animation + AJAX
+        load). The retry catches that window without adding meaningful
+        latency to the happy path (probe returns immediately on a normal
+        confirmation page).
+
+        Returns None on no error detected. Otherwise returns a dict:
 
             {
               "error_type": "duplicate" | "criteria_not_met" | "portal_error" | "unknown",
-              "title": str,                # dialog title or synthesized
-              "body_text": str,            # visible body snippet (up to ~800 chars)
-              "prior_order_id": str|None,  # first order number found in body text
-              "matched_rule": str|None,    # which pattern fired
+              "title": str,
+              "body_text": str,
+              "prior_order_id": str|None,
+              "matched_rule": str|None,
             }
+        """
+        err = await self._probe_submission_error()
+        if err:
+            return err
+        # No error matched on first probe. Wait briefly in case a modal is
+        # still animating in (Nikita Durden 17417574 — duplicate modal
+        # rendered late, body_text on first probe didn't include the modal
+        # text, fell through to HOLD with "no confirmation captured").
+        import asyncio
+        await asyncio.sleep(2)
+        return await self._probe_submission_error()
+
+    async def _probe_submission_error(self) -> dict | None:
+        """Single-shot scan for a submission-error modal / interstitial.
 
         Strategy:
-          1. Inspect the DOM for visible modals (jQuery UI / [role=dialog]).
+          1. Inspect the DOM for visible modals (jQuery UI / [role=dialog] /
+             Kendo / common Carelon class patterns).
           2. Fall back to scanning the page body text.
           3. Match against SUBMISSION_ERROR_PATTERNS top-down; first hit wins.
           4. Extract the prior order number from whatever text we matched.
+
+        bodyText cap was bumped 1600 → 8000 chars (v146). The Order Request
+        Preview page has hundreds of chars of header content before the
+        duplicate-modal text appears in DOM order; the old 1600 cap cut off
+        before reaching the modal text, so the body-only fallback returned
+        no match.
         """
         try:
             raw = await self.page.evaluate(
                 r"""() => {
                     // Collect candidate modal containers — Carelon uses jQuery UI
-                    // dialogs and a few custom popup divs. We also check common
-                    // ARIA role markers.
+                    // dialogs, Kendo windows, and a few custom popup divs. We also
+                    // check common ARIA role markers and id-pattern selectors for
+                    // Carelon's specific dialogs.
                     const selectors = [
                       '.ui-dialog:not(.ui-dialog-hidden)',
                       '[role="dialog"]',
                       '.modal.show',
                       '.popup:not([style*="display: none"])',
+                      '.k-window',
+                      '[id*="DuplicateOrder"]',
+                      '[id*="duplicateOrder"]',
+                      'div[class*="Modal"]',
+                      'div[class*="modal-dialog"]',
                     ];
                     const dialogs = [];
+                    const seen = new Set();
                     for (const sel of selectors) {
-                      const els = document.querySelectorAll(sel);
+                      let els;
+                      try { els = document.querySelectorAll(sel); } catch (e) { continue; }
                       for (const el of els) {
-                        // skip invisible ones
+                        if (seen.has(el)) continue;
+                        seen.add(el);
                         const rect = el.getBoundingClientRect();
                         if (rect.width === 0 || rect.height === 0) continue;
                         const style = window.getComputedStyle(el);
                         if (style.display === 'none' || style.visibility === 'hidden') continue;
-                        const titleEl = el.querySelector('.ui-dialog-title, .modal-title, .popup-title, h1, h2, h3');
+                        const titleEl = el.querySelector('.ui-dialog-title, .modal-title, .popup-title, h1, h2, h3, .k-window-title');
                         dialogs.push({
                           title: (titleEl ? titleEl.innerText : '').trim(),
                           body: el.innerText.substring(0, 1200),
@@ -1937,13 +2007,16 @@ class WebFormsClient:
                     }
                     return {
                       url: window.location.href,
-                      bodyText: document.body.innerText.substring(0, 1600),
+                      // 8000 chars catches modals that render late in DOM order.
+                      // The Order Request Preview page is ~3-4KB of text; this
+                      // covers the whole page in practice.
+                      bodyText: document.body.innerText.substring(0, 8000),
                       dialogs: dialogs,
                     };
                 }"""
             )
         except Exception as e:
-            logger.warning(f"detect_submission_error: page.evaluate failed: {e}")
+            logger.warning(f"_probe_submission_error: page.evaluate failed: {e}")
             return None
 
         dialogs = raw.get("dialogs") or []

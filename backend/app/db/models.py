@@ -219,6 +219,13 @@ class Case(Base):
     pathway_id: Mapped[str | None] = mapped_column(String, nullable=True)
     pathway_options: Mapped[list | None] = mapped_column(JSON, nullable=True)  # [{id, text}, ...]
 
+    # Carelon's "Anticipated Determination Date" — distinct from valid_from
+    # (which is "Scheduled Date of Service"). This is the date the rep cares
+    # about: when Carelon expects to render an auth decision. Captured from
+    # the post-submit confirmation page. Populated for PENDED / In-Progress
+    # outcomes; NULL for APPROVED (where the auth is already decided).
+    determination_date: Mapped[str | None] = mapped_column(String, nullable=True)
+
     # Rep override — when the rep changes the clinical scenario in review,
     # the next rerun must deterministically force the portal pathway to this
     # id (no LLM selection). Cleared by the compiler exactly when the

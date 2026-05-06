@@ -379,6 +379,184 @@ async def worker_status(db: AsyncSession = Depends(get_db)):
     return {"workers": statuses}
 
 
+# ── Reaper Service Control ──
+#
+# Reaper is a Restate VirtualObject (single key 'main') that periodically
+# sweeps stale CLAIMED / PROCESSING / SUBMITTING jobs and surfaces exhausted
+# jobs to HOLD. backend-api lifespan auto-triggers it on startup, but ops
+# also need to start/stop/check it on demand. Endpoints mirror the
+# WorkerLoop start/stop/status pattern.
+
+
+@router.post("/reaper/start")
+async def start_reaper():
+    """Manually (re-)trigger the Reaper VO. Idempotent — Restate dedupes
+    per-key, so calling this when one is already running just queues a
+    second invocation behind it (which serially runs after the first
+    completes its bounded 720 iterations / ~24h).
+    """
+    from app.core.settings import settings as env_settings
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{env_settings.RESTATE_URL}/Reaper/main/start/send",
+                json={},
+                headers={"Content-Type": "application/json"},
+            )
+            ok = resp.status_code in (200, 201, 202)
+            body = resp.text[:300]
+            logger.info(
+                f"Reaper start: http={resp.status_code} body={body!r}"
+            )
+            return {
+                "status": "started" if ok else "error",
+                "http_code": resp.status_code,
+                "response": body,
+            }
+    except Exception as e:
+        logger.error(f"Reaper start failed: {e}")
+        raise HTTPException(502, f"Failed to send Reaper start: {e}")
+
+
+@router.post("/reaper/stop")
+async def stop_reaper():
+    """Cancel all active Reaper invocations.
+
+    Queries sys_invocation_status for any Reaper invocations not in a
+    terminal state (invoked / suspended / inboxed) and sends a graceful
+    cancel via Restate's admin API. backend-api lifespan re-sends
+    /Reaper/main/start/send on next restart, so this is reversible.
+    """
+    from app.core.settings import settings as env_settings
+    import httpx
+    cancelled = []
+    errors = []
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            # Query active Reaper invocations. The SQL endpoint returns
+            # Arrow IPC by default; force JSON via Accept header (newer
+            # Restate versions support this).
+            q_resp = await client.post(
+                f"{env_settings.RESTATE_ADMIN_URL}/query",
+                json={
+                    "query": (
+                        "SELECT id, status FROM sys_invocation_status "
+                        "WHERE target_service_name = 'Reaper' "
+                        "AND status IN ('invoked', 'suspended', 'inboxed')"
+                    ),
+                },
+                headers={"Accept": "application/json"},
+                timeout=10.0,
+            )
+            inv_ids = _extract_reaper_ids_from_query_response(q_resp)
+            for inv_id in inv_ids:
+                try:
+                    r = await client.patch(
+                        f"{env_settings.RESTATE_ADMIN_URL}/invocations/{inv_id}/cancel",
+                        timeout=10.0,
+                    )
+                    cancelled.append({"id": inv_id, "http": r.status_code})
+                except Exception as ce:
+                    errors.append({"id": inv_id, "error": str(ce)[:200]})
+        logger.info(
+            f"Reaper stop: cancelled {len(cancelled)} invocation(s) "
+            f"({len(errors)} errors)"
+        )
+        return {
+            "cancelled": cancelled,
+            "errors": errors if errors else None,
+        }
+    except Exception as e:
+        logger.error(f"Reaper stop failed: {e}")
+        raise HTTPException(502, f"Failed to stop Reaper: {e}")
+
+
+@router.get("/reaper/status")
+async def reaper_status():
+    """Current Reaper VO state from sys_invocation_status."""
+    from app.core.settings import settings as env_settings
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            q_resp = await client.post(
+                f"{env_settings.RESTATE_ADMIN_URL}/query",
+                json={
+                    "query": (
+                        "SELECT id, status, created_at FROM sys_invocation_status "
+                        "WHERE target_service_name = 'Reaper' "
+                        "ORDER BY created_at DESC LIMIT 10"
+                    ),
+                },
+                headers={"Accept": "application/json"},
+                timeout=10.0,
+            )
+            invocations = _extract_reaper_invocations_from_query_response(q_resp)
+        active_count = sum(
+            1 for inv in invocations
+            if (inv.get("status") or "").lower() in ("invoked", "suspended", "inboxed")
+        )
+        return {
+            "running": active_count > 0,
+            "active_count": active_count,
+            "invocations": invocations,
+        }
+    except Exception as e:
+        logger.error(f"Reaper status failed: {e}")
+        raise HTTPException(502, f"Failed to query Reaper status: {e}")
+
+
+def _extract_reaper_ids_from_query_response(resp) -> list[str]:
+    """Best-effort: parse Restate /query response (JSON or Arrow IPC binary)
+    and return the `id` column values. Falls back to a strings-style scan
+    if neither structured path works."""
+    try:
+        data = resp.json()
+        rows = data.get("rows") or data.get("data") or []
+        if rows and isinstance(rows[0], dict):
+            return [r["id"] for r in rows if r.get("id")]
+        if rows and isinstance(rows[0], list):
+            # First column is `id` per the SELECT statement
+            return [r[0] for r in rows if r and r[0]]
+    except Exception:
+        pass
+    # Fallback: scan raw bytes for invocation id pattern. Restate ids start
+    # with `inv_` followed by base32-ish alphanumerics.
+    import re
+    raw = resp.content if hasattr(resp, "content") else b""
+    text = raw.decode("utf-8", errors="ignore") if isinstance(raw, bytes) else str(raw)
+    return list(set(re.findall(r"inv_[A-Za-z0-9]+", text)))
+
+
+def _extract_reaper_invocations_from_query_response(resp) -> list[dict]:
+    """Extract `[{id, status, created_at}, ...]` from Restate /query response."""
+    try:
+        data = resp.json()
+        rows = data.get("rows") or data.get("data") or []
+        out = []
+        if rows and isinstance(rows[0], dict):
+            for r in rows:
+                out.append({
+                    "id": r.get("id"),
+                    "status": r.get("status"),
+                    "created_at": r.get("created_at"),
+                })
+            return out
+        if rows and isinstance(rows[0], list):
+            for r in rows:
+                out.append({
+                    "id": r[0] if len(r) > 0 else None,
+                    "status": r[1] if len(r) > 1 else None,
+                    "created_at": r[2] if len(r) > 2 else None,
+                })
+            return out
+    except Exception:
+        pass
+    # Fallback: extract just the ids if structured parsing fails
+    ids = _extract_reaper_ids_from_query_response(resp)
+    return [{"id": i, "status": "unknown", "created_at": None} for i in ids]
+
+
 # ── Sync History ──
 
 

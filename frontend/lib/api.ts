@@ -481,6 +481,29 @@ export async function startWorker() {
   return apiFetch<any>("/settings/start-worker", { method: "POST" });
 }
 
+// Reaper Service Control
+export async function startReaper() {
+  return apiFetch<{ status: string; http_code: number; response: string }>(
+    "/settings/reaper/start",
+    { method: "POST" },
+  );
+}
+
+export async function stopReaper() {
+  return apiFetch<{
+    cancelled: { id: string; http: number }[];
+    errors: { id: string; error: string }[] | null;
+  }>("/settings/reaper/stop", { method: "POST" });
+}
+
+export async function reaperStatus() {
+  return apiFetch<{
+    running: boolean;
+    active_count: number;
+    invocations: { id: string; status: string; created_at: string | null }[];
+  }>("/settings/reaper/status");
+}
+
 // RingCentral Integration
 export async function getRcSettings() {
   return apiFetch<Record<string, any>>("/settings/integrations/rc");
