@@ -408,6 +408,15 @@ class SubmissionJob(Base):
     max_attempts: Mapped[int] = mapped_column(Integer, default=3)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Earliest UTC time at which claim_next_job will pick this job up again.
+    # Set on transient retries when we want to give the portal time to recover
+    # (typically Carelon-side flakes on the post-eligibility transition where
+    # attempts back-to-back all hit the same portal-state window). NULL means
+    # immediately claimable. v148: 5-minute cooldown for known portal-flake
+    # patterns ("provider search page did not load", "could not select
+    # provider", "facility continue failed").
+    cooldown_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
     # Timing
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

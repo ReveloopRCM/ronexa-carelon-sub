@@ -9,7 +9,7 @@ import logging
 from datetime import datetime, date
 from typing import Sequence
 
-from sqlalchemy import select, update, func, text, case as sql_case
+from sqlalchemy import select, update, func, text, case as sql_case, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
@@ -203,6 +203,16 @@ async def claim_next_job(
             # past max (we observed attempts of 65–73 in production) every
             # time `reap_stale_claims` reset the row to QUEUED.
             SubmissionJob.attempt < SubmissionJob.max_attempts,
+            # Skip jobs in cooldown (v148). When a transient retry hits a
+            # known portal-flake pattern (provider page didn't load, etc.),
+            # mark_case_hold sets cooldown_until=NOW+5min so attempt 2 lands
+            # AFTER Carelon's transient state has settled. NULL means
+            # immediately claimable (existing behavior, never set on the
+            # happy path).
+            or_(
+                SubmissionJob.cooldown_until.is_(None),
+                SubmissionJob.cooldown_until <= func.now(),
+            ),
         )
     )
 

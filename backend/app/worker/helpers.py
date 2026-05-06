@@ -119,7 +119,13 @@ async def navigate_to_homepage(worker_id: str) -> bool:
 
 
 def is_portal_error(error_msg: str) -> bool:
-    """Check if an error indicates a portal/browser issue (vs data issue)."""
+    """Check if an error indicates a portal/browser issue (vs data issue).
+
+    When True, the caller (process_case / finalize_case) closes the worker's
+    browser session so the next claim starts fresh. Critical for Carelon-side
+    flakes where the browser ends up in a wedged state (stale cookies,
+    redirected to Default.aspx, expired auth tokens).
+    """
     portal_indicators = [
         "TargetClosedError",
         "Target page, context or browser has been closed",
@@ -128,6 +134,12 @@ def is_portal_error(error_msg: str) -> bool:
         "net::ERR_",
         "Navigation failed",
         "Execution context was destroyed",
+        # v148: Carelon-side post-eligibility transition flake. The error
+        # message includes the Default.aspx URL fragment, so we match on a
+        # stable substring of the full message rather than the URL itself.
+        "Provider search page did not load",
+        "Could not select provider",
+        "Facility continue failed",
     ]
     return any(ind.lower() in error_msg.lower() for ind in portal_indicators)
 
@@ -213,6 +225,27 @@ async def mark_case_hold(case_id: str, hold_reason: str) -> None:
             job.exception_type = None
             job.exception_detail = None
 
+            # v148: cooldown for known portal-flake patterns where Carelon
+            # needs time to recover from a transient state. Without this,
+            # three back-to-back retries all hit the same flake window and
+            # the case exhausts to permanent HOLD even though the portal
+            # would have recovered after 1-2 minutes.
+            from datetime import datetime, timedelta
+            _PORTAL_FLAKE_PATTERNS = (
+                "provider search page",        # post-eligibility transition
+                "could not select provider",   # provider grid wait_for_selector
+                "facility continue failed",    # post-summary transition
+            )
+            is_portal_flake = any(p in reason_lower for p in _PORTAL_FLAKE_PATTERNS)
+            cooldown_until: "datetime | None" = None
+            if is_portal_flake:
+                cooldown_until = datetime.utcnow() + timedelta(minutes=5)
+                job.cooldown_until = cooldown_until
+            else:
+                # Reset any prior cooldown — non-flake transients retry
+                # immediately as before (browser blip, network reset, etc).
+                job.cooldown_until = None
+
             await repo.create_audit_event(
                 db, case_id=case_id, actor="system",
                 action="auto_requeue",
@@ -223,13 +256,16 @@ async def mark_case_hold(case_id: str, hold_reason: str) -> None:
                     "exception_type": exc_type.value,
                     "retry_state": retry_state.value,
                     "job_type": job.job_type,
+                    "cooldown_until": cooldown_until.isoformat() if cooldown_until else None,
+                    "portal_flake": is_portal_flake,
                 },
             )
             await db.commit()
+            cooldown_log = f", cooldown 5min until {cooldown_until.strftime('%H:%M:%S')}" if cooldown_until else ""
             logger.info(
                 f"Worker: case {case_id} auto-requeued "
                 f"(attempt {current_attempt}/{max_attempts}, "
-                f"transient: {hold_reason[:80]})"
+                f"transient: {hold_reason[:80]}{cooldown_log})"
             )
             return
 
