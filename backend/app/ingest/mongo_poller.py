@@ -76,26 +76,58 @@ def fetch_carelon_submissions(
     portal_match: str = "Carelon",
     status_filter: str | None = "Submitted",
     limit: int = 500,
+    env: str = "uat",
 ) -> SyncResult:
     """Fetch records from Mongo and map to Case dicts.
 
     Returns SyncResult with mapped case dicts (not yet inserted into Postgres).
+
+    Args:
+        env: Active Mongo environment — "uat" (default) or "prod". Selects
+            URI / database / collection / filter envelope. The inner document
+            shape (payload.ExamId, FirstName, etc.) is identical between
+            environments — only the metadata wrapper differs (UAT uses
+            `payload.PortalMatch + status`, prod uses `workflow_id +
+            authstatedesc` at root). Caller (sync_engine.run_sync) reads
+            the SystemSetting "active_mongo_environment" and passes it in.
     """
-    if not settings.MONGO_URI:
-        raise RuntimeError("MONGO_URI not configured")
-
-    # Cosmos DB uses self-signed certs in the chain
-    client = MongoClient(settings.MONGO_URI, tlsAllowInvalidCertificates=True)
-    try:
-        db = client[settings.MONGO_DB]
-        collection = db[settings.MONGO_COLLECTION]
-
-        query: dict = {"payload.PortalMatch": portal_match}
+    # Pick the right connection + filter based on env
+    if env == "prod":
+        uri = settings.MONGO_URI_PROD
+        db_name = settings.MONGO_DB_PROD
+        coll_name = settings.MONGO_COLLECTION_PROD
+        # Prod: root-level metadata fields (different wrapper than UAT)
+        query: dict = {
+            "workflow_id": "carelon",
+            "authstatedesc": "Needs Auth",
+        }
+    else:
+        # Default UAT (existing behavior — backwards compatible)
+        uri = settings.MONGO_URI
+        db_name = settings.MONGO_DB
+        coll_name = settings.MONGO_COLLECTION
+        query = {"payload.PortalMatch": portal_match}
         if status_filter:
             query["status"] = status_filter
 
+    if not uri:
+        logger.warning(
+            f"Mongo sync: {env.upper()} URI not configured — skipping (returning 0 records)"
+        )
+        return SyncResult(total_fetched=0)
+
+    logger.info(
+        f"Mongo sync: env={env} db={db_name} coll={coll_name} filter={query}"
+    )
+
+    # Cosmos DB uses self-signed certs in the chain
+    client = MongoClient(uri, tlsAllowInvalidCertificates=True)
+    try:
+        db = client[db_name]
+        collection = db[coll_name]
+
         records = list(collection.find(query).limit(limit))
-        logger.info(f"Fetched {len(records)} record(s) from Mongo (filter: {query})")
+        logger.info(f"Fetched {len(records)} record(s) from Mongo (env={env})")
 
         result = SyncResult(total_fetched=len(records))
 

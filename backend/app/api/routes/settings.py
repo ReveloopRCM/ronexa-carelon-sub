@@ -557,6 +557,64 @@ def _extract_reaper_invocations_from_query_response(resp) -> list[dict]:
     return [{"id": i, "status": "unknown", "created_at": None} for i in ids]
 
 
+# ── Mongo Sync Source (UAT / Prod toggle) ──
+#
+# v151: the case-sync source is dual-environment. UAT and Prod use different
+# Cosmos-Mongo databases / collections / filter envelopes (the inner
+# document shape is identical). The active source is selected at runtime
+# via a SystemSetting `active_mongo_environment` (default "uat"). This
+# endpoint pair lets the Settings UI read + flip the toggle. Connection
+# strings stay in env vars (secrets); only the env-name selector lives
+# in the DB.
+
+
+@router.get("/mongo-environment")
+async def get_mongo_env(db: AsyncSession = Depends(get_db)):
+    """Return current active Mongo environment + connection metadata.
+
+    Connection strings are NOT exposed — only the env name and
+    non-secret metadata (DB name, collection name, whether the URI is
+    configured) so the UI can show ✓ / ✗ for each side and reps verify
+    before flipping.
+    """
+    from app.core.settings import settings as env_settings
+    val = await _get_setting(db, "active_mongo_environment", "uat")
+    if not isinstance(val, str):
+        # Setting was stored as {"value": "..."} — accept that shape too
+        val = (val or {}).get("value", "uat") if isinstance(val, dict) else "uat"
+    if val not in ("uat", "prod"):
+        val = "uat"
+
+    return {
+        "active": val,
+        "uat": {
+            "db": env_settings.MONGO_DB,
+            "collection": env_settings.MONGO_COLLECTION,
+            "uri_set": bool(env_settings.MONGO_URI),
+        },
+        "prod": {
+            "db": env_settings.MONGO_DB_PROD,
+            "collection": env_settings.MONGO_COLLECTION_PROD,
+            "uri_set": bool(env_settings.MONGO_URI_PROD),
+        },
+    }
+
+
+@router.post("/mongo-environment")
+async def set_mongo_env(body: dict, db: AsyncSession = Depends(get_db)):
+    """Switch the active Mongo environment. Body: {"value": "uat"|"prod"}.
+
+    The next sync iteration (poll_scheduler tick or manual /api/sync)
+    picks up the new value. Reversible — flip back at any time.
+    """
+    val = (body.get("value") or "").strip().lower()
+    if val not in ("uat", "prod"):
+        raise HTTPException(400, "value must be 'uat' or 'prod'")
+    await _set_setting(db, "active_mongo_environment", val)
+    logger.info(f"Mongo environment switched → {val}")
+    return {"active": val, "status": "updated"}
+
+
 # ── Sync History ──
 
 
@@ -927,6 +985,7 @@ async def _record_sync(db: AsyncSession, result: dict) -> None:
         "notes_extracted": result.get("notes_extracted", 0),
         "enqueued": result.get("enqueued", 0),
         "errors": result.get("errors", 0) + result.get("extraction_errors", 0),
+        "env": result.get("env", "uat"),  # v151: track which Mongo source this run hit
     }
 
     await _set_setting(db, "last_sync_at", entry["timestamp"])

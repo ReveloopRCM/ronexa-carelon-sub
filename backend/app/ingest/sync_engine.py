@@ -25,9 +25,23 @@ async def run_sync(
     from app.ingest.blob_fetcher import fetch_clinical_pdf
     from app.ingest.pdf_parser import extract_page_images
     from app.intelligence.extractor import extract_clinical_context
+    from app.db.models import SystemSetting
 
-    # Step 1: Fetch from Mongo
-    sync_result = fetch_carelon_submissions(limit=limit)
+    # v151: read active Mongo environment toggle (UAT / Prod). Default UAT
+    # for zero behavior change on deploy. Reps flip via Settings UI when
+    # ready to point sync at prod.
+    setting_row = await db.get(SystemSetting, "active_mongo_environment")
+    env = "uat"
+    if setting_row and setting_row.value:
+        # SystemSetting.value is a JSONB column — accept either a bare
+        # string ("prod") or a dict ({"value": "prod"}). Be defensive.
+        raw = setting_row.value
+        candidate = raw if isinstance(raw, str) else (raw.get("value") if isinstance(raw, dict) else None)
+        if candidate in ("uat", "prod"):
+            env = candidate
+
+    # Step 1: Fetch from Mongo (with active env)
+    sync_result = fetch_carelon_submissions(limit=limit, env=env)
 
     if not sync_result.cases:
         return {
@@ -38,6 +52,7 @@ async def run_sync(
             "extraction_errors": 0,
             "errors": sync_result.errors,
             "enqueued": 0,
+            "env": env,
         }
 
     # Step 2: Dedup against Postgres
@@ -280,4 +295,5 @@ async def run_sync(
         "submitting_reaped": submitting_reaped,
         "exhausted_failed": exhausted_failed,
         "clinicals_rerun": rerun_count,
+        "env": env,
     }

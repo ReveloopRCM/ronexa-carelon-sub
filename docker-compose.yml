@@ -53,6 +53,12 @@ services:
       MONGO_URI: ${MONGO_URI:-}
       MONGO_DB: ${MONGO_DB:-workflowdb}
       MONGO_COLLECTION: ${MONGO_COLLECTION:-auth-submissions}
+      # v151: production Mongo (case-sync source). Active source selected
+      # at runtime via Settings UI (Sync Source panel) — defaults to UAT.
+      # Leave MONGO_URI_PROD blank to disable the prod side entirely.
+      MONGO_URI_PROD: ${MONGO_URI_PROD:-}
+      MONGO_DB_PROD: ${MONGO_DB_PROD:-llm_orchestration_prod}
+      MONGO_COLLECTION_PROD: ${MONGO_COLLECTION_PROD:-gateway_submissions}
       AZURE_BLOB_CONNECTION_STRING: ${AZURE_BLOB_CONNECTION_STRING:-}
       AZURE_BLOB_CONTAINER: ${AZURE_BLOB_CONTAINER:-carelon-attachments}
       AZURE_DOC_INTELLIGENCE_ENDPOINT: ${AZURE_DOC_INTELLIGENCE_ENDPOINT:-}

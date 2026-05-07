@@ -55,9 +55,19 @@ class Settings(BaseSettings):
     REQUIRE_REP_REVIEW: bool = True
 
     # Envision — MongoDB (Cosmos DB) + Azure Blob Storage
+    # UAT (existing) — workflowdb.auth-submissions, filter
+    # {payload.PortalMatch: "Carelon", status: "Submitted"}
     MONGO_URI: str = ""
     MONGO_DB: str = "workflowdb"
     MONGO_COLLECTION: str = "auth-submissions"
+    # Production (v151) — llm_orchestration_prod.gateway_submissions, filter
+    # {workflow_id: "carelon", authstatedesc: "Needs Auth"}.
+    # Inner document shape (payload.ExamId, FirstName, etc.) is identical to
+    # UAT — only the metadata wrapper / filter differs. The active env is
+    # selected at runtime via SystemSetting "active_mongo_environment".
+    MONGO_URI_PROD: str = ""
+    MONGO_DB_PROD: str = "llm_orchestration_prod"
+    MONGO_COLLECTION_PROD: str = "gateway_submissions"
     AZURE_BLOB_CONNECTION_STRING: str = ""
     AZURE_BLOB_CONTAINER: str = "carelon-attachments"
 

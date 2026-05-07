@@ -481,6 +481,22 @@ export async function startWorker() {
   return apiFetch<any>("/settings/start-worker", { method: "POST" });
 }
 
+// Mongo Sync Source (UAT / Prod toggle)
+export async function getMongoEnvironment() {
+  return apiFetch<{
+    active: "uat" | "prod";
+    uat: { db: string; collection: string; uri_set: boolean };
+    prod: { db: string; collection: string; uri_set: boolean };
+  }>("/settings/mongo-environment");
+}
+
+export async function setMongoEnvironment(value: "uat" | "prod") {
+  return apiFetch<{ active: string; status: string }>(
+    "/settings/mongo-environment",
+    { method: "POST", body: JSON.stringify({ value }) },
+  );
+}
+
 // Reaper Service Control
 export async function startReaper() {
   return apiFetch<{ status: string; http_code: number; response: string }>(

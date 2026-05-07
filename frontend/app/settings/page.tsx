@@ -822,6 +822,9 @@ export default function SettingsPage() {
             </div>
           </div>
 
+          {/* Mongo Sync Source (UAT / Prod toggle) */}
+          <SyncSourcePanel showMessage={showMessage} />
+
           {/* Reaper Service */}
           <ReaperServicePanel showMessage={showMessage} />
 
@@ -2080,6 +2083,171 @@ function ReaperServicePanel({
           </tbody>
         </table>
       )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Sync Source Panel — toggle the Mongo case-sync source between UAT and
+// Production. Connection strings stay in env vars (secrets); this panel
+// only flips a SystemSetting that the poller reads on each iteration.
+// Default is UAT — flip to Prod via the radio + confirmation when ready.
+// ─────────────────────────────────────────────────────────────────────────
+
+type SyncSourceState = {
+  active: "uat" | "prod";
+  uat: { db: string; collection: string; uri_set: boolean };
+  prod: { db: string; collection: string; uri_set: boolean };
+};
+
+function SyncSourcePanel({
+  showMessage,
+}: {
+  showMessage: (text: string, type: "success" | "error") => void;
+}) {
+  const [state, setState] = useState<SyncSourceState | null>(null);
+  const [pending, setPending] = useState<"uat" | "prod" | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = async () => {
+    try {
+      const { getMongoEnvironment } = await import("@/lib/api");
+      const s = await getMongoEnvironment();
+      setState(s);
+    } catch (err: any) {
+      showMessage(`Sync source: ${err.message}`, "error");
+    }
+  };
+
+  useEffect(() => {
+    refresh();
+  }, []);
+
+  const handleSave = async () => {
+    if (!pending || !state || pending === state.active) return;
+    const target = pending;
+    const targetMeta = state[target];
+    const confirmMsg =
+      `Switching sync source to ${target.toUpperCase()}.\n\n` +
+      `New cases will be pulled from:\n  ${targetMeta.db}.${targetMeta.collection}\n\n` +
+      (targetMeta.uri_set
+        ? "Continue?"
+        : "⚠ Connection URI is NOT configured for this environment. The next sync will return 0 records. Continue anyway?");
+    if (!confirm(confirmMsg)) return;
+    setBusy(true);
+    try {
+      const { setMongoEnvironment } = await import("@/lib/api");
+      const result = await setMongoEnvironment(target);
+      if (result.status === "updated") {
+        showMessage(`Sync source switched → ${target.toUpperCase()}`, "success");
+        await refresh();
+        setPending(null);
+      } else {
+        showMessage(`Sync source switch returned: ${result.status}`, "error");
+      }
+    } catch (err: any) {
+      showMessage(`Sync source switch failed: ${err.message}`, "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const renderSide = (key: "uat" | "prod") => {
+    if (!state) return null;
+    const side = state[key];
+    const isActive = state.active === key;
+    const isPending = pending === key && pending !== state.active;
+    return (
+      <div
+        key={key}
+        className={
+          "border rounded-lg p-3 cursor-pointer transition " +
+          (isActive
+            ? "border-green-500 bg-green-50"
+            : isPending
+              ? "border-blue-500 bg-blue-50"
+              : "border-gray-300 hover:border-gray-400")
+        }
+        onClick={() => setPending(key)}
+      >
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-2">
+            <input
+              type="radio"
+              checked={isPending || isActive}
+              onChange={() => setPending(key)}
+              className="cursor-pointer"
+            />
+            <span className="font-semibold uppercase">{key}</span>
+            {isActive && (
+              <span className="text-xs px-1.5 py-0.5 bg-green-100 text-green-800 rounded">
+                ACTIVE
+              </span>
+            )}
+          </div>
+          <span
+            className={
+              "text-xs px-1.5 py-0.5 rounded " +
+              (side.uri_set
+                ? "bg-green-100 text-green-800"
+                : "bg-red-100 text-red-700")
+            }
+          >
+            URI {side.uri_set ? "✓ configured" : "✗ not set"}
+          </span>
+        </div>
+        <div className="text-xs text-gray-600 font-mono">
+          {side.db}.{side.collection}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="border rounded-lg p-5">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="font-semibold text-lg">Sync Source (Mongo / Cosmos)</h2>
+        <span
+          className={
+            "px-2 py-0.5 rounded text-xs font-medium " +
+            (state?.active === "prod"
+              ? "bg-purple-100 text-purple-800"
+              : "bg-gray-100 text-gray-700")
+          }
+        >
+          {state ? `Active: ${state.active.toUpperCase()}` : "loading…"}
+        </span>
+      </div>
+      <p className="text-xs text-gray-500 mb-3">
+        Selects which Cosmos-Mongo source feeds the case-sync poll. Connection strings stay in env vars (secrets). Default: UAT.
+        Flip via the radio + Save when ready to point sync at Production.
+        Reversible — flip back any time.
+      </p>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+        {renderSide("uat")}
+        {renderSide("prod")}
+      </div>
+      <div className="flex items-center gap-2">
+        <button
+          onClick={handleSave}
+          disabled={busy || !pending || !state || pending === state.active}
+          className="px-3 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:opacity-50"
+        >
+          {pending && state && pending !== state.active
+            ? `Switch to ${pending.toUpperCase()}`
+            : "Save"}
+        </button>
+        <button
+          onClick={() => {
+            setPending(null);
+            refresh();
+          }}
+          disabled={busy}
+          className="px-3 py-1.5 bg-gray-200 text-gray-700 rounded text-sm hover:bg-gray-300 disabled:opacity-50"
+        >
+          Refresh
+        </button>
+      </div>
     </div>
   );
 }
