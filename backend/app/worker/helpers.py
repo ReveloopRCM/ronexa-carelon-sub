@@ -215,6 +215,22 @@ async def mark_case_hold(case_id: str, hold_reason: str) -> None:
             # for every job_type. SUBMIT / ORDER / SIGNATURE_REPLAY retries
             # silently became unclaimable — case state didn't match its claim
             # filter, job sat QUEUED forever (Adedeji 73723, Rivers 73218).
+            #
+            # v153: BEFORE resetting job.status=QUEUED, kill any prior Restate
+            # workflow invocation keyed by this case_id. Restate workflows are
+            # idempotent on key — a `workflow_send` with a key that already has
+            # an active (running/suspended/completed-within-retention)
+            # invocation silently dedupes to that prior one. So re-claiming
+            # without purging leaves the SubmitWorkflow handler never entering
+            # again, the worker doing nothing, the Reaper resetting again, and
+            # attempts running through 3/3 with ZERO error captured. We saw
+            # this on Lopez/Talley/Thidavanh on 2026-05-07 — restate-handler
+            # logs showed "HANDLER ENTERED" once, then attempts 2/3 silent.
+            # purge_case_workflow is non-fatal: errors are logged but never
+            # raised (per its v141 contract), so reset proceeds either way.
+            from app.workflow.restate_utils import purge_case_workflow
+            await purge_case_workflow(case_id)
+
             from app.db.queue import ready_state_for
             retry_state = ready_state_for(job.job_type)
             case.state = retry_state

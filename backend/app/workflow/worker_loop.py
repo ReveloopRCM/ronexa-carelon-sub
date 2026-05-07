@@ -662,6 +662,14 @@ async def reap_stale_claims() -> int:
                 )).scalar_one_or_none()
                 ran = hit is not None
 
+            # v153: purge any prior Restate workflow invocation keyed by this
+            # case_id BEFORE resetting the job to QUEUED. Without this, the
+            # next claim's `workflow_send` is silently deduped against the
+            # still-active prior invocation — handler never re-enters, attempts
+            # exhaust with no error captured. Non-fatal on failure.
+            from app.workflow.restate_utils import purge_case_workflow
+            await purge_case_workflow(job.case_id)
+
             job.status = JobStatus.QUEUED
             job.claimed_by = None
             job.claimed_at = None
@@ -837,6 +845,14 @@ async def reap_stale_submitting() -> int:
                 if stale_since and stale_since > datetime.utcnow() - timedelta(minutes=30):
                     continue
 
+            # v153: purge any prior SubmitWorkflow invocation keyed by this
+            # case_id BEFORE resetting the job. Without this, attempts 2/3
+            # silently dedupe against the suspended attempt-1 invocation —
+            # handler never re-enters, exhaustion happens with zero error.
+            # This is THE bug Lopez/Talley/Thidavanh hit on 2026-05-07.
+            from app.workflow.restate_utils import purge_case_workflow
+            await purge_case_workflow(case.id)
+
             job.status = JobStatus.QUEUED
             job.claimed_by = None
             job.claimed_at = None
@@ -891,6 +907,12 @@ async def reap_stale_processing() -> int:
                 job.status = JobStatus.QUEUED
                 job.claimed_by = None
                 job.claimed_at = None
+
+            # v153: purge any prior Restate workflow invocation for this case
+            # so the next claim's `workflow_send` creates a fresh one (not
+            # silently deduped against the still-active prior invocation).
+            from app.workflow.restate_utils import purge_case_workflow
+            await purge_case_workflow(case.id)
 
             # Reset case state based on job type — sourced from the canonical
             # PHASE_READY_STATE table (db/queue.py) so this stays in sync with
