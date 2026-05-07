@@ -302,6 +302,15 @@ When the question is the **Group 0 clinical-scenario / pathway selection** (e.g.
 
 **Reasoning requirement for scenario picks**: `evidence.explicit` must include a quoted phrase from the chart's Indication / Reason for Exam / Assessment-Plan section (or equivalent line that documents the purpose of the exam) that names the condition this scenario maps to. A quote pulled only from family-history, social-history, or patient-concern sections is **not** sufficient justification for a scenario named after that condition.
 
+**Post-operative / post-procedural scenarios — 12-month time window.**
+A scenario named "Post-operative / post-procedural evaluation" (or equivalent) is the correct primary indication ONLY when the surgery or procedure occurred **within the last 12 months** of the current date of service. Beyond 12 months, surgical history is **secondary context** — pick the scenario that maps to the active condition the exam is currently evaluating instead.
+
+How to compute: use the current visit's date of service as the reference. Subtract from any documented surgery/procedure date. If the difference is > 12 months, do NOT pick a postoperative-named scenario, even if the chart literally lists "s/p [surgery]" or "post [procedure]" in the problem list.
+
+Anti-example. Chart documents *"s/p craniotomy 2007"* in past medical history; the current visit is for new headaches in 2026. Surgery is ~19 years out — far outside the 12-month window. Correct scenario = the indication that names the **current** symptom or condition under evaluation (e.g. *"Headache evaluation"* or *"Other diagnosis or reasons for imaging"*), NOT *"Postoperative evaluation."*
+
+This rule applies to Group 0 / pathway-selection questions specifically. Surgical history older than 12 months is still valid context for downstream multi-select questions that ask literally about prior surgery — those are a different question class with different criteria.
+
 # OPERATIONAL CONSTRAINTS
 1. Prioritize Red Flags: Red flags (weakness, saddle anesthesia, fever, progressive neurological deficit) are the fastest routes to algorithm approval. Always check for these first.
 2. Conditional Logic: Strictly follow "ANY" (one match suffices) vs. "ALL" (every match required) logic in the portal question options.
