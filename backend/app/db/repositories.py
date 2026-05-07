@@ -59,32 +59,73 @@ async def get_case_by_exam_id(db: AsyncSession, exam_id: str) -> Case | None:
 async def list_cases(
     db: AsyncSession,
     state: CaseState | None = None,
+    states: Sequence[CaseState] | None = None,
     center_npi: str | None = None,
     batch_id: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
+    order_by_recent: bool = False,
     limit: int = 100,
     offset: int = 0,
-) -> Sequence[Case]:
-    q = select(Case)
-    if state:
-        q = q.where(Case.state == state)
+) -> tuple[Sequence[Case], int]:
+    """Return (rows, total_count). Total ignores limit/offset so the
+    frontend can paginate without re-counting per page.
+
+    `state` (single) and `states` (list) both supported — `states`
+    takes precedence when both given. Single-`state` callers stay
+    backward-compatible.
+    """
+    base = select(Case)
+    count_q = select(func.count()).select_from(Case)
+
+    def _apply_filter(cond):
+        nonlocal base, count_q
+        base = base.where(cond)
+        count_q = count_q.where(cond)
+
+    # State filter — accept multi-state list OR single-state legacy arg
+    state_list: list[CaseState] = []
+    if states:
+        state_list = [s for s in states if s is not None]
+    elif state is not None:
+        state_list = [state]
+    if state_list:
+        _apply_filter(Case.state.in_(state_list))
+
     if center_npi:
-        q = q.where(Case.center_npi == center_npi)
+        _apply_filter(Case.center_npi == center_npi)
     if batch_id:
-        q = q.where(Case.batch_id == batch_id)
+        _apply_filter(Case.batch_id == batch_id)
     if date_from:
         from datetime import datetime as _dt
         d = _dt.strptime(date_from, "%Y-%m-%d")
-        q = q.where(func.coalesce(Case.submitted_at, Case.updated_at) >= d)
+        _apply_filter(func.coalesce(Case.submitted_at, Case.updated_at) >= d)
     if date_to:
         from datetime import datetime as _dt, timedelta as _td
         d = _dt.strptime(date_to, "%Y-%m-%d") + _td(days=1)
-        q = q.where(func.coalesce(Case.submitted_at, Case.updated_at) < d)
-    q = q.order_by(Case.sort_priority, Case.scheduled_dt.asc().nulls_last(), Case.ingested_at)
-    q = q.limit(limit).offset(offset)
-    result = await db.execute(q)
-    return result.scalars().all()
+        _apply_filter(func.coalesce(Case.submitted_at, Case.updated_at) < d)
+
+    if order_by_recent:
+        # Most-recently-touched first — natural for terminal/holding tabs
+        # where reps want to see what just finished.
+        base = base.order_by(
+            func.coalesce(
+                Case.submitted_at, Case.updated_at, Case.ingested_at
+            ).desc()
+        )
+    else:
+        # Priority sort — natural for active queue (process by priority,
+        # then scheduled date, then ingest time).
+        base = base.order_by(
+            Case.sort_priority,
+            Case.scheduled_dt.asc().nulls_last(),
+            Case.ingested_at,
+        )
+    base = base.limit(limit).offset(offset)
+
+    rows = (await db.execute(base)).scalars().all()
+    total = (await db.execute(count_q)).scalar() or 0
+    return rows, total
 
 
 async def update_case_state(

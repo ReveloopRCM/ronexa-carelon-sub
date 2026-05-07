@@ -26,23 +26,75 @@ async def list_cases(
     batch_id: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
+    order_by: str = "priority",
     limit: int = 100,
     offset: int = 0,
     db: AsyncSession = Depends(get_db),
 ):
-    """List cases with filtering."""
-    state_enum = CaseState(state) if state else None
-    cases = await repo.list_cases(
+    """List cases with filtering + pagination.
+
+    `state` accepts comma-separated values (e.g. ?state=APPROVED,DENIED).
+    `order_by` is 'priority' (default — sort_priority/scheduled_dt/ingested_at)
+    or 'recent' (most-recent first by COALESCE(submitted_at, updated_at,
+    ingested_at) DESC). Returns an envelope:
+
+        {"items": [...], "total": N, "limit": L, "offset": O}
+
+    `total` is the row count BEFORE limit/offset is applied — drives the
+    GUI's "Page X of Y" controls.
+    """
+    states: list[CaseState] | None = None
+    if state:
+        try:
+            states = [CaseState(s.strip()) for s in state.split(",") if s.strip()]
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid state value: {e}")
+    cases, total = await repo.list_cases(
         db,
-        state=state_enum,
+        states=states,
         center_npi=center_npi,
         batch_id=batch_id,
         date_from=date_from,
         date_to=date_to,
+        order_by_recent=(order_by == "recent"),
         limit=limit,
         offset=offset,
     )
-    return [_serialize_case(c) for c in cases]
+    return {
+        "items": [_serialize_case(c) for c in cases],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@router.get("/counts")
+async def case_counts(
+    date_from: str | None = None,
+    date_to: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return state→count for cases in the given date range.
+
+    Drives the tab badges in the Cases page so they reflect the *real*
+    total per state, not just what fits on the current paginated page.
+    Single GROUP BY query — fast.
+    """
+    from sqlalchemy import func, select as _select
+    from app.db.models import Case
+
+    q = _select(Case.state, func.count(Case.id)).group_by(Case.state)
+    if date_from:
+        from datetime import datetime as _dt
+        d = _dt.strptime(date_from, "%Y-%m-%d")
+        q = q.where(func.coalesce(Case.submitted_at, Case.updated_at) >= d)
+    if date_to:
+        from datetime import datetime as _dt, timedelta as _td
+        d = _dt.strptime(date_to, "%Y-%m-%d") + _td(days=1)
+        q = q.where(func.coalesce(Case.submitted_at, Case.updated_at) < d)
+    rows = (await db.execute(q)).all()
+    counts = {state.value: count for state, count in rows}
+    return {"counts_by_state": counts, "total": sum(counts.values())}
 
 
 @router.get("/{case_id}")
@@ -650,6 +702,12 @@ def _serialize_case(case) -> dict:
         "updated_at": case.updated_at.isoformat() if case.updated_at else None,
         "submitted_at": case.submitted_at.isoformat() if case.submitted_at else None,
         "flags": (case.raw_data or {}).get("_flags", []),
+        # IsExamAutoApproved probe result (v69, April 3) — surfaces the
+        # gold-card / algorithm / manual / no_auth approval pathway so the
+        # GUI can render the right badge. /api/queue already serializes
+        # these; matching here so the Cases tab works the same way.
+        "auto_approved": getattr(case, "auto_approved", None),
+        "approval_type": getattr(case, "approval_type", None),
         "gold_card_level": getattr(case, "gold_card_level", None),
         # Fax delivery tracking (nullable; populated once fax is approved)
         "fax_message_id": getattr(case, "fax_message_id", None),

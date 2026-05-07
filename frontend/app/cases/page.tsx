@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { listCases, syncFromMongo } from "@/lib/api";
+import { listCases, getCaseCounts, syncFromMongo } from "@/lib/api";
 
 const STATE_COLORS: Record<string, string> = {
   PENDING_NOTES: "bg-gray-100 text-gray-700",
@@ -75,52 +75,107 @@ const BUCKETS = [
   { key: "failed", label: "Failed", color: "bg-red-100 text-red-700", filter: (c: any) => c.state === "FAILED" },
 ];
 
+// Page size for paginated tabs (Completed / Hold / Submission / Submission Errors).
+// All Active tab uses a much larger fetch (LIMIT_ACTIVE) since reps need to
+// see the entire active backlog filtered by bucket pills client-side.
+const PAGE_SIZE = 50;
+const LIMIT_ACTIVE = 2000;
+
+// Sum case counts across a list of states. Drives tab badges from the
+// /api/cases/counts response.
+function sumStates(counts: Record<string, number>, states: string[]): number {
+  return states.reduce((acc, s) => acc + (counts[s] || 0), 0);
+}
+
 export default function CasesPage() {
-  const [allCases, setAllCases] = useState<any[]>([]);
-  const [cases, setCases] = useState<any[]>([]);
+  // Currently-displayed rows. For paginated tabs this is one page (≤PAGE_SIZE);
+  // for all_active it's the full active dataset (≤LIMIT_ACTIVE) which is then
+  // bucket-filtered client-side.
+  const [activeCases, setActiveCases] = useState<any[]>([]);
+  const [pagedCases, setPagedCases] = useState<any[]>([]);
+  const [pagedTotal, setPagedTotal] = useState(0);
+
+  const [counts, setCounts] = useState<Record<string, number>>({});
   const [tab, setTab] = useState<Tab>("all_active");
   const [activeBucket, setActiveBucket] = useState("all");
   const [stateFilter, setStateFilter] = useState("");
   const [dateFilter, setDateFilter] = useState(todayInChicago());
+  const [page, setPage] = useState(0); // zero-indexed
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<any>(null);
 
+  // Re-fetch counts on date change (tab badges).
+  useEffect(() => {
+    loadCounts();
+  }, [dateFilter]);
+
+  // Re-fetch current view on tab / page / state-filter / date / bucket change.
+  // For all_active we re-fetch the entire active dataset; for paginated tabs
+  // we fetch just the current page.
   useEffect(() => {
     loadCases();
-  }, []);
+  }, [tab, page, stateFilter, dateFilter]);
 
-  // Re-filter when tab, bucket, or stateFilter changes
+  // Reset page → 0 whenever tab changes or filters change (so we don't land
+  // on page 5 of a different tab's empty result set).
   useEffect(() => {
-    if (tab === "all_active") {
-      const bucket = BUCKETS.find((b) => b.key === activeBucket);
-      const filtered = bucket
-        ? allCases.filter(bucket.filter)
-        : allCases.filter((c: any) => ALL_ACTIVE_STATES.includes(c.state));
-      setCases(filtered);
-    } else if (tab === "submission") {
-      setCases(allCases.filter((c: any) => SUBMISSION_STATES.includes(c.state)));
-    } else if (tab === "submission_error") {
-      setCases(allCases.filter((c: any) => SUBMISSION_ERROR_STATES.includes(c.state)));
-    } else if (tab === "hold") {
-      setCases(allCases.filter((c: any) => HOLD_STATES.includes(c.state)));
-    } else if (tab === "completed") {
-      const filtered = stateFilter
-        ? allCases.filter((c: any) => c.state === stateFilter)
-        : allCases.filter((c: any) => COMPLETED_STATES.includes(c.state));
-      setCases(filtered);
-    }
-  }, [allCases, tab, activeBucket, stateFilter]);
+    setPage(0);
+  }, [tab, stateFilter, dateFilter]);
 
-  async function loadCases(dateOverride?: string) {
+  async function loadCounts() {
+    try {
+      const result = await getCaseCounts({
+        date_from: dateFilter,
+        date_to: dateFilter,
+      });
+      setCounts(result.counts_by_state || {});
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  async function loadCases() {
     setLoading(true);
     try {
-      const d = dateOverride ?? dateFilter;
-      const data = await listCases({
-        limit: 500,
-        ...(d ? { date_from: d, date_to: d } : {}),
-      });
-      setAllCases(data);
+      if (tab === "all_active") {
+        // Full active backlog — bucket pills filter client-side.
+        const data = await listCases({
+          state: ALL_ACTIVE_STATES.join(","),
+          order_by: "priority",
+          limit: LIMIT_ACTIVE,
+          date_from: dateFilter,
+          date_to: dateFilter,
+        });
+        setActiveCases(data.items);
+        setPagedCases([]);
+        setPagedTotal(0);
+      } else {
+        // Per-tab paginated fetch with most-recent-first ordering.
+        let stateParam: string;
+        if (tab === "completed") {
+          stateParam = stateFilter || COMPLETED_STATES.join(",");
+        } else if (tab === "submission") {
+          stateParam = SUBMISSION_STATES.join(",");
+        } else if (tab === "submission_error") {
+          stateParam = SUBMISSION_ERROR_STATES.join(",");
+        } else if (tab === "hold") {
+          stateParam = HOLD_STATES.join(",");
+        } else {
+          stateParam = "";
+        }
+        const data = await listCases({
+          state: stateParam,
+          order_by: "recent",
+          limit: PAGE_SIZE,
+          offset: page * PAGE_SIZE,
+          date_from: dateFilter,
+          date_to: dateFilter,
+        });
+        setPagedCases(data.items);
+        setPagedTotal(data.total);
+        setActiveCases([]);
+      }
     } catch (err) {
       console.error(err);
     } finally {
@@ -128,16 +183,37 @@ export default function CasesPage() {
     }
   }
 
-  // Counts per tab
-  const activeCount = allCases.filter((c: any) => ALL_ACTIVE_STATES.includes(c.state)).length;
-  const submissionCount = allCases.filter((c: any) => SUBMISSION_STATES.includes(c.state)).length;
-  const submissionErrorCount = allCases.filter((c: any) => SUBMISSION_ERROR_STATES.includes(c.state)).length;
-  const holdCount = allCases.filter((c: any) => HOLD_STATES.includes(c.state)).length;
-  const completedCount = allCases.filter((c: any) => COMPLETED_STATES.includes(c.state)).length;
+  // Counts for tab badges — derived from the /counts endpoint, which gives
+  // accurate per-state totals regardless of the current page.
+  const activeCount = sumStates(counts, ALL_ACTIVE_STATES);
+  const submissionCount = sumStates(counts, SUBMISSION_STATES);
+  const submissionErrorCount = sumStates(counts, SUBMISSION_ERROR_STATES);
+  const holdCount = sumStates(counts, HOLD_STATES);
+  const completedCount = sumStates(counts, COMPLETED_STATES);
+
+  // Bucket pill counts — applied to the active dataset, not /counts, because
+  // some buckets gate on `is_stat` (a row-level field, not a state). Only
+  // meaningful when the all_active tab is loaded.
   const bucketCounts = BUCKETS.reduce((acc, b) => {
-    acc[b.key] = allCases.filter(b.filter).length;
+    acc[b.key] = activeCases.filter(b.filter).length;
     return acc;
   }, {} as Record<string, number>);
+
+  // Compute the rows to render in the table for the current tab.
+  const cases =
+    tab === "all_active"
+      ? (() => {
+          const bucket = BUCKETS.find((b) => b.key === activeBucket);
+          return bucket
+            ? activeCases.filter(bucket.filter)
+            : activeCases.filter((c: any) => ALL_ACTIVE_STATES.includes(c.state));
+        })()
+      : pagedCases;
+
+  // Pagination control values (only meaningful for paginated tabs).
+  const totalPages = tab === "all_active" ? 1 : Math.max(1, Math.ceil(pagedTotal / PAGE_SIZE));
+  const showingFrom = pagedTotal === 0 ? 0 : page * PAGE_SIZE + 1;
+  const showingTo = Math.min((page + 1) * PAGE_SIZE, pagedTotal);
 
   const tabs: { key: Tab; label: string; count: number; color: string; activeColor: string }[] = [
     { key: "all_active", label: "All Active", count: activeCount, color: "bg-blue-100 text-blue-700", activeColor: "border-blue-600 text-blue-600" },
@@ -160,7 +236,7 @@ export default function CasesPage() {
               try {
                 const result = await syncFromMongo({ extract: false });
                 setSyncResult(result);
-                await loadCases();
+                await Promise.all([loadCases(), loadCounts()]);
               } catch (err: any) {
                 setSyncResult({ error: err.message });
               } finally {
@@ -193,7 +269,7 @@ export default function CasesPage() {
         </div>
       )}
 
-      {/* 4-Tab Navigation */}
+      {/* 5-Tab Navigation */}
       <div className="flex items-center gap-0 border-b">
         {tabs.map((t) => (
           <button
@@ -222,18 +298,16 @@ export default function CasesPage() {
           </button>
         ))}
 
-        {/* Filters for Completed tab */}
-        {tab === "completed" && (
-          <div className="ml-auto flex items-center gap-2">
-            <input
-              type="date"
-              value={dateFilter}
-              onChange={(e) => {
-                setDateFilter(e.target.value);
-                loadCases(e.target.value);
-              }}
-              className="border rounded px-3 py-1.5 text-sm"
-            />
+        {/* Filters: date picker is global (applies to every tab); the
+            completed-tab outcome dropdown narrows further within COMPLETED_STATES. */}
+        <div className="ml-auto flex items-center gap-2">
+          <input
+            type="date"
+            value={dateFilter}
+            onChange={(e) => setDateFilter(e.target.value)}
+            className="border rounded px-3 py-1.5 text-sm"
+          />
+          {tab === "completed" && (
             <select
               value={stateFilter}
               onChange={(e) => setStateFilter(e.target.value)}
@@ -246,8 +320,8 @@ export default function CasesPage() {
                 </option>
               ))}
             </select>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       {/* Bucket pills (All Active tab only) */}
@@ -550,6 +624,38 @@ export default function CasesPage() {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Pagination footer \u2014 only on paginated tabs (not all_active). The
+          all_active tab loads up to LIMIT_ACTIVE rows in one shot since
+          bucket pills filter client-side and need the full dataset. */}
+      {tab !== "all_active" && pagedTotal > 0 && (
+        <div className="flex items-center justify-between text-sm text-gray-600 pt-2 border-t">
+          <div>
+            Showing <span className="font-medium">{showingFrom}</span>\u2013
+            <span className="font-medium">{showingTo}</span> of{" "}
+            <span className="font-medium">{pagedTotal}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setPage((p) => Math.max(0, p - 1))}
+              disabled={page === 0}
+              className="px-3 py-1 border rounded text-sm disabled:opacity-40 hover:bg-gray-50"
+            >
+              \u2190 Prev
+            </button>
+            <span className="text-xs">
+              Page {page + 1} of {totalPages}
+            </span>
+            <button
+              onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+              disabled={page >= totalPages - 1}
+              className="px-3 py-1 border rounded text-sm disabled:opacity-40 hover:bg-gray-50"
+            >
+              Next \u2192
+            </button>
+          </div>
         </div>
       )}
     </div>

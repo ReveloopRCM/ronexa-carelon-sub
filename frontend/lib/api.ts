@@ -42,25 +42,57 @@ export async function confirmUpload(data: {
   });
 }
 
+// Paginated envelope returned by GET /api/cases (v154+).
+//   items  — current page rows
+//   total  — total matching rows (BEFORE limit/offset) — drives "Page X of Y"
+//   limit  — echoed page size
+//   offset — echoed page offset
+export type CasesPage = {
+  items: any[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
 export async function listCases(params?: {
+  // `state` is a comma-separated list (server-side multi-state filter).
+  // Single value still works ("APPROVED") — list is ["APPROVED"] of one.
   state?: string;
   center_npi?: string;
   batch_id?: string;
   date_from?: string;
   date_to?: string;
+  // 'priority' (default — sort_priority/scheduled_dt/ingested_at)
+  // or 'recent' (most-recent first via COALESCE(submitted_at, updated_at, ingested_at) DESC)
+  order_by?: "priority" | "recent";
   limit?: number;
   offset?: number;
-}) {
+}): Promise<CasesPage> {
   const searchParams = new URLSearchParams();
   if (params?.state) searchParams.set("state", params.state);
   if (params?.center_npi) searchParams.set("center_npi", params.center_npi);
   if (params?.batch_id) searchParams.set("batch_id", params.batch_id);
   if (params?.date_from) searchParams.set("date_from", params.date_from);
   if (params?.date_to) searchParams.set("date_to", params.date_to);
+  if (params?.order_by) searchParams.set("order_by", params.order_by);
   if (params?.limit) searchParams.set("limit", String(params.limit));
   if (params?.offset) searchParams.set("offset", String(params.offset));
   const qs = searchParams.toString();
-  return apiFetch<any[]>(`/cases${qs ? `?${qs}` : ""}`);
+  return apiFetch<CasesPage>(`/cases${qs ? `?${qs}` : ""}`);
+}
+
+// Returns state→count for the date range. Drives accurate tab badges
+// in the Cases page since per-tab pagination means the page itself
+// can't compute totals from local data alone.
+export async function getCaseCounts(params?: {
+  date_from?: string;
+  date_to?: string;
+}): Promise<{ counts_by_state: Record<string, number>; total: number }> {
+  const searchParams = new URLSearchParams();
+  if (params?.date_from) searchParams.set("date_from", params.date_from);
+  if (params?.date_to) searchParams.set("date_to", params.date_to);
+  const qs = searchParams.toString();
+  return apiFetch(`/cases/counts${qs ? `?${qs}` : ""}`);
 }
 
 export async function getCase(caseId: string) {
