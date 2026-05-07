@@ -225,46 +225,74 @@ def _map_mongo_record(record: dict) -> dict | None:
     return case
 
 
+def _active_mongo_target(env: str) -> tuple[str, str, str]:
+    """Return (uri, db_name, coll_name) for the given env.
+
+    v152: writeback functions need to target the SAME source the fetch
+    pulled from. The active env is selected at runtime via the
+    SystemSetting "active_mongo_environment". Caller passes env="uat"
+    or env="prod"; default "uat" preserves backward-compat.
+    """
+    if env == "prod":
+        return (
+            settings.MONGO_URI_PROD,
+            settings.MONGO_DB_PROD,
+            settings.MONGO_COLLECTION_PROD,
+        )
+    return (settings.MONGO_URI, settings.MONGO_DB, settings.MONGO_COLLECTION)
+
+
 def mark_mongo_records_synced(
     exam_ids: list[str],
     new_status: str = "Synced",
+    env: str = "uat",
 ) -> int:
-    """Update Mongo records after successful Postgres insert."""
-    if not settings.MONGO_URI or not exam_ids:
+    """Update Mongo records after successful Postgres insert.
+
+    v152: targets the env-active source DB. Caller (sync_engine.run_sync)
+    passes env=current_active_env so we mark records in the same DB we
+    just pulled them from.
+    """
+    uri, db_name, coll_name = _active_mongo_target(env)
+    if not uri or not exam_ids:
         return 0
 
-    client = MongoClient(settings.MONGO_URI, tlsAllowInvalidCertificates=True)
+    client = MongoClient(uri, tlsAllowInvalidCertificates=True)
     try:
-        db = client[settings.MONGO_DB]
-        collection = db[settings.MONGO_COLLECTION]
+        collection = client[db_name][coll_name]
 
         result = collection.update_many(
             {"payload.ExamId": {"$in": exam_ids}},
             {"$set": {"status": new_status}},
         )
 
-        logger.info(f"Marked {result.modified_count} Mongo records as '{new_status}'")
+        logger.info(
+            f"Marked {result.modified_count} Mongo records as '{new_status}' (env={env})"
+        )
         return result.modified_count
     finally:
         client.close()
 
 
-def check_clinical_attachment(exam_id: str) -> str | None:
+def check_clinical_attachment(exam_id: str, env: str = "uat") -> str | None:
     """Check Cosmos DB for an updated ClinicalAttachments value.
 
     Lightweight single-record lookup — used by the Restate workflow retry loop
     when a case was synced without a clinical blob and we need to check if the
     RIS has uploaded it since.
 
+    v152: targets the env-active source DB. Caller passes env="uat" or
+    env="prod"; default "uat" preserves backward-compat.
+
     Returns the blob key string if found, None otherwise.
     """
-    if not settings.MONGO_URI:
+    uri, db_name, coll_name = _active_mongo_target(env)
+    if not uri:
         return None
 
-    client = MongoClient(settings.MONGO_URI, tlsAllowInvalidCertificates=True)
+    client = MongoClient(uri, tlsAllowInvalidCertificates=True)
     try:
-        db = client[settings.MONGO_DB]
-        collection = db[settings.MONGO_COLLECTION]
+        collection = client[db_name][coll_name]
 
         record = collection.find_one(
             {
@@ -277,12 +305,12 @@ def check_clinical_attachment(exam_id: str) -> str | None:
         if record:
             blob_key = record.get("payload", {}).get("ClinicalAttachments")
             if blob_key and blob_key not in NULL_VALUES:
-                logger.info(f"Clinical attachment found for {exam_id}: {blob_key}")
+                logger.info(f"Clinical attachment found for {exam_id}: {blob_key} (env={env})")
                 return blob_key
 
         return None
     except Exception as e:
-        logger.error(f"Failed to check clinical attachment for {exam_id}: {e}")
+        logger.error(f"Failed to check clinical attachment for {exam_id} (env={env}): {e}")
         return None
     finally:
         client.close()
@@ -295,11 +323,17 @@ def update_mongo_auth_status(
     auth_state_id: int,
     workflow_note: str,
     auth_number: str = "",
+    env: str = "uat",
 ) -> int:
     """Write auth status back to Mongo/CosmosDB after portal submission.
 
     Updates the source record with authorization outcome so the RIS
     can pick up the status change.
+
+    v152: targets the env-active source DB. Critical for prod cutover —
+    the prod RIS won't see auth outcomes if this writeback goes to UAT.
+    Caller (portal_compiler.py) reads active_mongo_environment from
+    SystemSetting and passes env=... here.
 
     Fields updated on the Mongo document:
         status → auth_state_desc (e.g. "Auth Pending", "Authorized")
@@ -309,13 +343,13 @@ def update_mongo_auth_status(
         payload.LastAuthNote → workflow_note
         payload.PrimaryAuthTrackingNum → auth_number
     """
-    if not settings.MONGO_URI or not exam_id:
+    uri, db_name, coll_name = _active_mongo_target(env)
+    if not uri or not exam_id:
         return 0
 
-    client = MongoClient(settings.MONGO_URI, tlsAllowInvalidCertificates=True)
+    client = MongoClient(uri, tlsAllowInvalidCertificates=True)
     try:
-        db = client[settings.MONGO_DB]
-        collection = db[settings.MONGO_COLLECTION]
+        collection = client[db_name][coll_name]
 
         # Normalize exam_id to int if possible (Mongo stores as int)
         try:
@@ -341,13 +375,13 @@ def update_mongo_auth_status(
         )
 
         logger.info(
-            f"Mongo auth status updated for ExamId={exam_id}: "
+            f"Mongo auth status updated for ExamId={exam_id} (env={env}): "
             f"matched={result.matched_count}, modified={result.modified_count}, "
             f"state={auth_state_desc}"
         )
         return result.modified_count
     except Exception as e:
-        logger.error(f"Failed to update Mongo auth status for ExamId={exam_id}: {e}")
+        logger.error(f"Failed to update Mongo auth status for ExamId={exam_id} (env={env}): {e}")
         return 0
     finally:
         client.close()

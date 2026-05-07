@@ -141,3 +141,144 @@ def test_fetch_default_env_is_uat():
 
     fake_client.__getitem__.assert_called_with("workflowdb")
     assert isinstance(result, SyncResult)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# v152: writeback functions also dispatch by env
+# (mark_mongo_records_synced, update_mongo_auth_status)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_mark_synced_uses_prod_target_when_env_prod():
+    """mark_mongo_records_synced(env='prod') connects to prod URI and
+    writes to llm_orchestration_prod.gateway_submissions."""
+    from app.ingest.mongo_poller import mark_mongo_records_synced
+
+    fake_result = MagicMock()
+    fake_result.modified_count = 3
+    fake_collection = MagicMock()
+    fake_collection.update_many.return_value = fake_result
+    fake_db = MagicMock()
+    fake_db.__getitem__.return_value = fake_collection
+    fake_client = MagicMock()
+    fake_client.__getitem__.return_value = fake_db
+
+    with patch("app.ingest.mongo_poller.MongoClient", return_value=fake_client) as mongo_client, \
+         patch("app.ingest.mongo_poller.settings") as fake_settings:
+        fake_settings.MONGO_URI = "mongodb://uat-uri/"
+        fake_settings.MONGO_DB = "workflowdb"
+        fake_settings.MONGO_COLLECTION = "auth-submissions"
+        fake_settings.MONGO_URI_PROD = "mongodb://prod-uri/"
+        fake_settings.MONGO_DB_PROD = "llm_orchestration_prod"
+        fake_settings.MONGO_COLLECTION_PROD = "gateway_submissions"
+
+        n = mark_mongo_records_synced(["EX1", "EX2"], env="prod")
+
+    # Targeted prod URI
+    mongo_client.assert_called_once_with("mongodb://prod-uri/", tlsAllowInvalidCertificates=True)
+    # Right db + collection
+    fake_client.__getitem__.assert_called_with("llm_orchestration_prod")
+    fake_db.__getitem__.assert_called_with("gateway_submissions")
+    # Update query shape unchanged across envs (payload.ExamId)
+    update_call = fake_collection.update_many.call_args
+    assert update_call[0][0] == {"payload.ExamId": {"$in": ["EX1", "EX2"]}}
+    assert update_call[0][1] == {"$set": {"status": "Synced"}}
+    assert n == 3
+
+
+def test_mark_synced_default_env_is_uat():
+    """mark_mongo_records_synced() with no env defaults to UAT —
+    backwards-compat for any caller that hasn't been updated."""
+    from app.ingest.mongo_poller import mark_mongo_records_synced
+
+    fake_result = MagicMock()
+    fake_result.modified_count = 1
+    fake_collection = MagicMock()
+    fake_collection.update_many.return_value = fake_result
+    fake_db = MagicMock()
+    fake_db.__getitem__.return_value = fake_collection
+    fake_client = MagicMock()
+    fake_client.__getitem__.return_value = fake_db
+
+    with patch("app.ingest.mongo_poller.MongoClient", return_value=fake_client) as mongo_client, \
+         patch("app.ingest.mongo_poller.settings") as fake_settings:
+        fake_settings.MONGO_URI = "mongodb://uat-uri/"
+        fake_settings.MONGO_DB = "workflowdb"
+        fake_settings.MONGO_COLLECTION = "auth-submissions"
+        fake_settings.MONGO_URI_PROD = "mongodb://prod-uri/"
+
+        mark_mongo_records_synced(["EX1"])  # no env arg
+
+    mongo_client.assert_called_once_with("mongodb://uat-uri/", tlsAllowInvalidCertificates=True)
+    fake_client.__getitem__.assert_called_with("workflowdb")
+
+
+def test_update_auth_status_uses_prod_target_when_env_prod():
+    """update_mongo_auth_status(env='prod') connects to prod URI and
+    writes the auth outcome to the prod source DB."""
+    from app.ingest.mongo_poller import update_mongo_auth_status
+
+    fake_result = MagicMock()
+    fake_result.matched_count = 1
+    fake_result.modified_count = 1
+    fake_collection = MagicMock()
+    fake_collection.update_one.return_value = fake_result
+    fake_db = MagicMock()
+    fake_db.__getitem__.return_value = fake_collection
+    fake_client = MagicMock()
+    fake_client.__getitem__.return_value = fake_db
+
+    with patch("app.ingest.mongo_poller.MongoClient", return_value=fake_client) as mongo_client, \
+         patch("app.ingest.mongo_poller.settings") as fake_settings:
+        fake_settings.MONGO_URI = "mongodb://uat-uri/"
+        fake_settings.MONGO_URI_PROD = "mongodb://prod-uri/"
+        fake_settings.MONGO_DB_PROD = "llm_orchestration_prod"
+        fake_settings.MONGO_COLLECTION_PROD = "gateway_submissions"
+
+        n = update_mongo_auth_status(
+            exam_id="17400000",
+            auth_state_desc="Auth Pending",
+            auth_state_sub_desc="Waiting On carrier",
+            auth_state_id=3,
+            workflow_note="test",
+            auth_number="ORD-123",
+            env="prod",
+        )
+
+    mongo_client.assert_called_once_with("mongodb://prod-uri/", tlsAllowInvalidCertificates=True)
+    fake_client.__getitem__.assert_called_with("llm_orchestration_prod")
+    fake_db.__getitem__.assert_called_with("gateway_submissions")
+    assert n == 1
+
+
+def test_update_auth_status_default_env_is_uat():
+    """update_mongo_auth_status() with no env defaults to UAT — backwards-compat."""
+    from app.ingest.mongo_poller import update_mongo_auth_status
+
+    fake_result = MagicMock()
+    fake_result.matched_count = 1
+    fake_result.modified_count = 1
+    fake_collection = MagicMock()
+    fake_collection.update_one.return_value = fake_result
+    fake_db = MagicMock()
+    fake_db.__getitem__.return_value = fake_collection
+    fake_client = MagicMock()
+    fake_client.__getitem__.return_value = fake_db
+
+    with patch("app.ingest.mongo_poller.MongoClient", return_value=fake_client) as mongo_client, \
+         patch("app.ingest.mongo_poller.settings") as fake_settings:
+        fake_settings.MONGO_URI = "mongodb://uat-uri/"
+        fake_settings.MONGO_DB = "workflowdb"
+        fake_settings.MONGO_COLLECTION = "auth-submissions"
+        fake_settings.MONGO_URI_PROD = "mongodb://prod-uri/"
+
+        update_mongo_auth_status(
+            exam_id="17400000",
+            auth_state_desc="Auth Pending",
+            auth_state_sub_desc="Waiting On carrier",
+            auth_state_id=3,
+            workflow_note="test",
+        )
+
+    mongo_client.assert_called_once_with("mongodb://uat-uri/", tlsAllowInvalidCertificates=True)
+    fake_client.__getitem__.assert_called_with("workflowdb")

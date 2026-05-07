@@ -159,8 +159,9 @@ async def run_sync(
     await db.commit()
 
     # Step 5: Mark Mongo records as synced (prevents re-fetch on next poll)
+    # v152: pass env so writeback targets the same source DB we pulled from
     if inserted_exam_ids:
-        mark_mongo_records_synced(inserted_exam_ids)
+        mark_mongo_records_synced(inserted_exam_ids, env=env)
 
     # Step 6: Fire-and-forget extraction for cases with blob keys
     # ExtractionService runs parallel OCR via Restate (non-blocking)

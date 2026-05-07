@@ -976,6 +976,20 @@ class PortalCompiler:
                         f"Case {order_id} "
                         f"Determination date {det_date}"
                     )
+                    # v152: read active Mongo env BEFORE the to_thread call so
+                    # the writeback targets the SAME source DB we pulled from.
+                    # (Can't easily do an async DB read inside the threaded
+                    # sync function — read here, pass env in.)
+                    from app.db.database import async_session_factory
+                    from app.db.models import SystemSetting
+                    async with async_session_factory() as _db:
+                        _setting = await _db.get(SystemSetting, "active_mongo_environment")
+                        _raw = _setting.value if _setting else None
+                        _env = _raw if isinstance(_raw, str) else (
+                            _raw.get("value") if isinstance(_raw, dict) else None
+                        )
+                        if _env not in ("uat", "prod"):
+                            _env = "uat"
                     import asyncio as _aio
                     await _aio.to_thread(update_mongo_auth_status,
                         exam_id=exam_id,
@@ -984,8 +998,9 @@ class PortalCompiler:
                         auth_state_id=3,
                         workflow_note=note,
                         auth_number=order_id,
+                        env=_env,
                     )
-                    logger.info(f"Mongo updated for pended case: exam_id={exam_id}")
+                    logger.info(f"Mongo updated for pended case: exam_id={exam_id} (env={_env})")
                 except Exception as e:
                     logger.warning(f"Mongo update failed (non-fatal): {e}")
 
