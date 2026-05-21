@@ -41,3 +41,8 @@ pgdata/
 # Local test files
 backend/test_workflows.py
 backend/tests/fixtures/
+
+# Handoff docs
+HANDOFF*.md
+handoff*.md
+docs/handoff-*.md
