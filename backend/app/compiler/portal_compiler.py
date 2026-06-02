@@ -139,8 +139,13 @@ class PortalCompiler:
             else:
                 raise ValueError(f"Unknown phase type: {phase.type}")
 
-            # Check for terminal states — stop phase loop immediately
-            if phase_result.get("case_state") in ("HOLD", "NO_AUTH_REQUIRED"):
+            # Check for terminal states — stop phase loop immediately.
+            # v155: PHYSICIAN_CALL_REQUIRED added — same early-exit semantics
+            # as NO_AUTH_REQUIRED (rep handles via Call Worklist, no further
+            # portal work needed in this attempt).
+            if phase_result.get("case_state") in (
+                "HOLD", "NO_AUTH_REQUIRED", "PHYSICIAN_CALL_REQUIRED",
+            ):
                 return phase_result
 
             # If answers need review, return for workflow:
@@ -627,6 +632,19 @@ class PortalCompiler:
                     if elig["data"].get("di_requires_auth") is False:
                         logger.info("DI does not require pre-auth for this member — stopping early")
                         blob_key = await _capture_no_auth_summary(session.page, case)
+                        # v155 — distinguish "physician must initiate" from true no-auth.
+                        # Same eligibility-page outcome, different lblIneligible text.
+                        ineligible = await wf.extract_ineligible_message()
+                        if ineligible.get("physician_initiation_required"):
+                            return {
+                                "case_state": "PHYSICIAN_CALL_REQUIRED",
+                                "hold_reason": (
+                                    "Treating physician must initiate Carelon Order "
+                                    "Request — imaging center cannot submit. Call physician office."
+                                ),
+                                "no_auth_screenshot_key": blob_key,
+                                "portal_message": ineligible.get("text"),
+                            }
                         return {
                             "case_state": "NO_AUTH_REQUIRED",
                             "hold_reason": "DI does not require pre-authorization for this member's plan",
@@ -699,6 +717,18 @@ class PortalCompiler:
                 if result.get("eligibility", {}).get("di_requires_auth") is False:
                     logger.info("DI does not require pre-auth for this member — stopping early")
                     blob_key = await _capture_no_auth_summary(session.page, case)
+                    # v155 — distinguish "physician must initiate" from true no-auth.
+                    ineligible = await wf.extract_ineligible_message()
+                    if ineligible.get("physician_initiation_required"):
+                        return {
+                            "case_state": "PHYSICIAN_CALL_REQUIRED",
+                            "hold_reason": (
+                                "Treating physician must initiate Carelon Order "
+                                "Request — imaging center cannot submit. Call physician office."
+                            ),
+                            "no_auth_screenshot_key": blob_key,
+                            "portal_message": ineligible.get("text"),
+                        }
                     return {
                         "case_state": "NO_AUTH_REQUIRED",
                         "hold_reason": "DI does not require pre-authorization for this member's plan",
@@ -748,6 +778,20 @@ class PortalCompiler:
             # Portal says no auth required for this member/procedure
             if auths_data.get("no_auth_required"):
                 blob_key = await _capture_no_auth_summary(session.page, case)
+                # v155 — also possible we landed on the Order Summary page where
+                # Carelon says "treating physician must initiate". Same broad
+                # no-auth signal; different actionable outcome for the rep.
+                ineligible = await wf.extract_ineligible_message()
+                if ineligible.get("physician_initiation_required"):
+                    return {
+                        "case_state": "PHYSICIAN_CALL_REQUIRED",
+                        "hold_reason": (
+                            "Treating physician must initiate Carelon Order "
+                            "Request — imaging center cannot submit. Call physician office."
+                        ),
+                        "no_auth_screenshot_key": blob_key,
+                        "portal_message": ineligible.get("text"),
+                    }
                 return {
                     "case_state": "NO_AUTH_REQUIRED",
                     "hold_reason": f"No auth required per portal: {auths_data.get('portal_message', '')[:150]}",

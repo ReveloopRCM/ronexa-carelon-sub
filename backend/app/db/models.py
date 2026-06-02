@@ -50,6 +50,7 @@ class CaseState(str, enum.Enum):
     PENDED = "PENDED"
     PENDED_FAX_REVIEW = "PENDED_FAX_REVIEW"  # Pended, waiting for fax validation before sending
     NO_AUTH_REQUIRED = "NO_AUTH_REQUIRED"    # Portal says no pre-auth needed for this member/plan
+    PHYSICIAN_CALL_REQUIRED = "PHYSICIAN_CALL_REQUIRED"  # v155 — Carelon says treating physician must initiate the order; imaging center can't submit. Rep calls physician office.
     CLINICAL_REVIEW = "CLINICAL_REVIEW"      # Processed via signature replay, awaiting rep verification with clinicals
     ALREADY_WORKED = "ALREADY_WORKED"        # Worked in legacy system, flagged by rep to clear review queue
     ORDER_READY = "ORDER_READY"              # Order form extracted, ready for OrderWorkflow (no clinical notes)

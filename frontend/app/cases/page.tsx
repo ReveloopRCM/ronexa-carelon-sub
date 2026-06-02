@@ -18,6 +18,10 @@ const STATE_COLORS: Record<string, string> = {
   WAITING_CLINICALS: "bg-yellow-100 text-yellow-700",
   PENDED_FAX_REVIEW: "bg-orange-100 text-orange-700",
   NO_AUTH_REQUIRED: "bg-emerald-100 text-emerald-700",
+  // v155 — Call Worklist: physician must initiate, rep needs to phone the
+  // physician's office. Distinct visual from NO_AUTH (emerald = done) and
+  // HOLD (amber = error); orange-red signals "needs your phone".
+  PHYSICIAN_CALL_REQUIRED: "bg-orange-200 text-orange-900",
   ALREADY_WORKED: "bg-gray-100 text-gray-500",
   APPROVED: "bg-green-100 text-green-700",
   DENIED: "bg-red-100 text-red-700",
@@ -47,6 +51,9 @@ const ALL_ACTIVE_STATES = [
 const SUBMISSION_STATES = ["SUBMITTING"];
 const SUBMISSION_ERROR_STATES = ["SUBMISSION_ERROR"];
 const HOLD_STATES = ["HOLD"];
+// v155 — Call Worklist: physician-initiation-required cases live here, NOT
+// in Completed. Imaging center cannot submit; rep must call physician.
+const CALL_STATES = ["PHYSICIAN_CALL_REQUIRED"];
 const COMPLETED_STATES = ["APPROVED", "DENIED", "PENDED", "NO_AUTH_REQUIRED", "ALREADY_WORKED"];
 
 // Date default pinned to Central time so the picker never rolls to
@@ -61,7 +68,7 @@ function todayInChicago(): string {
   }).format(new Date());
 }
 
-type Tab = "all_active" | "submission" | "submission_error" | "hold" | "completed";
+type Tab = "all_active" | "submission" | "submission_error" | "hold" | "call" | "completed";
 
 // Bucket pills for the "All Active" tab — quick filters within active cases
 const BUCKETS = [
@@ -161,6 +168,8 @@ export default function CasesPage() {
           stateParam = SUBMISSION_ERROR_STATES.join(",");
         } else if (tab === "hold") {
           stateParam = HOLD_STATES.join(",");
+        } else if (tab === "call") {
+          stateParam = CALL_STATES.join(",");
         } else {
           stateParam = "";
         }
@@ -189,6 +198,7 @@ export default function CasesPage() {
   const submissionCount = sumStates(counts, SUBMISSION_STATES);
   const submissionErrorCount = sumStates(counts, SUBMISSION_ERROR_STATES);
   const holdCount = sumStates(counts, HOLD_STATES);
+  const callCount = sumStates(counts, CALL_STATES);
   const completedCount = sumStates(counts, COMPLETED_STATES);
 
   // Bucket pill counts — applied to the active dataset, not /counts, because
@@ -220,6 +230,7 @@ export default function CasesPage() {
     { key: "submission", label: "Submission", count: submissionCount, color: "bg-cyan-100 text-cyan-700", activeColor: "border-cyan-600 text-cyan-600" },
     { key: "submission_error", label: "Submission Errors", count: submissionErrorCount, color: "bg-rose-100 text-rose-700", activeColor: "border-rose-600 text-rose-600" },
     { key: "hold", label: "On Hold", count: holdCount, color: "bg-amber-100 text-amber-700", activeColor: "border-amber-600 text-amber-600" },
+    { key: "call", label: "Call Worklist", count: callCount, color: "bg-orange-200 text-orange-900", activeColor: "border-orange-600 text-orange-700" },
     { key: "completed", label: "Completed", count: completedCount, color: "bg-green-100 text-green-700", activeColor: "border-green-600 text-green-600" },
   ];
 
@@ -360,8 +371,65 @@ export default function CasesPage() {
             ? "No cases in submission queue."
             : tab === "hold"
             ? "No cases on hold."
+            : tab === "call"
+            ? "No physician-call cases — all caught up."
             : "No active cases found."}
         </p>
+      ) : tab === "call" ? (
+        /* ── Call Worklist Tab (v155) ──
+           Cases where the portal said "treating physician must initiate
+           the Carelon Order Request". Imaging center cannot submit; rep
+           needs to phone the referring physician's office. */
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm border">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-3 py-2 text-left">ExamId</th>
+                <th className="px-3 py-2 text-left">Patient</th>
+                <th className="px-3 py-2 text-left">DOB</th>
+                <th className="px-3 py-2 text-left">CPT</th>
+                <th className="px-3 py-2 text-left">Center</th>
+                <th className="px-3 py-2 text-left">Portal Message</th>
+                <th className="px-3 py-2 text-left">Flagged</th>
+              </tr>
+            </thead>
+            <tbody>
+              {cases.map((c) => (
+                <tr key={c.id} className="border-t hover:bg-orange-50">
+                  <td className="px-3 py-2">
+                    <Link
+                      href={`/cases/${c.id}`}
+                      className="font-mono text-xs text-blue-600 hover:underline"
+                    >
+                      {c.exam_id}
+                    </Link>
+                  </td>
+                  <td className="px-3 py-2 font-medium">
+                    {c.first_name} {c.last_name}
+                  </td>
+                  <td className="px-3 py-2 text-xs text-gray-600">{c.dob || "—"}</td>
+                  <td className="px-3 py-2">
+                    <div>{c.cpt_code}</div>
+                    {(c.body_side_desc || c.body_part_desc) && (
+                      <div className="text-[11px] text-gray-500 mt-0.5">
+                        {[c.body_side_desc, c.body_part_desc].filter(Boolean).join(" ")}
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-3 py-2">{c.center_abbr || c.center_npi}</td>
+                  <td className="px-3 py-2 text-xs text-orange-900 max-w-[360px]">
+                    {c.hold_reason || "Physician initiation required"}
+                  </td>
+                  <td className="px-3 py-2 text-xs text-gray-500">
+                    {c.updated_at
+                      ? new Date(c.updated_at).toLocaleString()
+                      : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       ) : tab === "completed" ? (
         /* ── Completed Tab ── */
         <div className="overflow-x-auto">

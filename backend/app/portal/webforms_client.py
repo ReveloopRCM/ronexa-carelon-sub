@@ -802,6 +802,90 @@ class WebFormsClient:
 
         return _ok({"auths": auths, "count": len(auths)})
 
+    async def extract_ineligible_message(self) -> dict:
+        """Read the portal's "ineligible" span and classify its meaning.
+
+        Carelon uses the SAME element ID (`*_lblIneligible`) on multiple
+        pages with different text per case outcome:
+
+          • "A Carelon Order number may be required for this member.
+             Please contact the treating physician about initiating the
+             Carelon Order Request process."
+            → imaging center can't submit; treating physician's office
+              must initiate. Rep needs to CALL the physician.
+            → `physician_initiation_required=True`
+
+          • "DI does not require pre-authorization for this member's plan"
+            → genuine no-auth; case is done.
+            → `true_no_auth=True`
+
+        v155 — introduced because the physician-initiation cases (Ian
+        Lawler 15517158 / 17578976) previously lumped into NO_AUTH_REQUIRED
+        and hid in the Completed tab even though the rep still had to call.
+
+        Returns:
+            {
+              "ok": True,
+              "present": bool,            # was the span found?
+              "text": str,                # the span text (≤400 chars)
+              "physician_initiation_required": bool,
+              "true_no_auth": bool,
+            }
+
+        Safe to call defensively at any NO_AUTH-style detection site —
+        returns `present=False` when nothing matches, so callers can
+        fall through to existing logic.
+        """
+        try:
+            text = await self.page.evaluate(
+                """() => {
+                    const selectors = [
+                        '#PrintActivity_ctl00_lblIneligible',
+                        '#asPrimary_ctl00_lblIneligible',
+                        'span[id$="_lblIneligible"]',
+                    ];
+                    for (const sel of selectors) {
+                        const el = document.querySelector(sel);
+                        if (el && el.textContent && el.textContent.trim()) {
+                            return el.textContent.trim();
+                        }
+                    }
+                    return '';
+                }"""
+            )
+        except Exception as e:
+            logger.warning(f"extract_ineligible_message: page.evaluate failed: {e}")
+            return {"ok": False, "present": False, "error": str(e)[:200]}
+
+        if not text:
+            return {"ok": True, "present": False}
+
+        low = text.lower()
+        physician_call = (
+            "treating physician about initiating" in low
+            or "carelon order number may be required" in low
+            or "contact the treating physician" in low
+        )
+        true_no_auth = (
+            not physician_call
+            and (
+                "does not require pre-authorization" in low
+                or "does not require an order" in low
+                or "pre-authorization is not required" in low
+            )
+        )
+        logger.info(
+            f"extract_ineligible_message: physician_call={physician_call} "
+            f"true_no_auth={true_no_auth} text={text[:120]!r}"
+        )
+        return {
+            "ok": True,
+            "present": True,
+            "text": text[:400],
+            "physician_initiation_required": physician_call,
+            "true_no_auth": true_no_auth,
+        }
+
     async def click_next_after_auths(self) -> dict:
         """Click Next on the existing authorizations page.
 

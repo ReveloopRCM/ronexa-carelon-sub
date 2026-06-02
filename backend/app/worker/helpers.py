@@ -436,6 +436,65 @@ async def mark_case_no_auth_review(case_id: str, reason: str, screenshot_key: st
         logger.info(f"Worker: case {case_id} → IN_REVIEW (no_auth: {reason[:80]})")
 
 
+async def mark_case_physician_call_required(
+    case_id: str,
+    reason: str,
+    portal_message: str | None = None,
+    screenshot_key: str | None = None,
+) -> None:
+    """Route case to the Call Worklist — treating physician must initiate.
+
+    v155 — distinct from `mark_case_no_auth_review`. Carelon's Order Summary
+    page returned text matching the "treating physician about initiating"
+    pattern. The imaging center cannot submit; only the physician's office
+    can initiate the Carelon Order Request. The rep needs to *call* the
+    physician.
+
+    State goes DIRECTLY to PHYSICIAN_CALL_REQUIRED (no L1_REVIEW gate) —
+    there's nothing for the rep to verify, only to act on. The screenshot
+    (already captured by `_capture_no_auth_summary` in the compiler) is
+    the rep's evidence/context when they make the call.
+    """
+    from app.db.database import async_session_factory
+    from app.db import repositories as repo
+    from app.db.models import CaseState
+
+    async with async_session_factory() as db:
+        case = await repo.get_case(db, case_id)
+        if case:
+            case.state = CaseState.PHYSICIAN_CALL_REQUIRED
+            case.hold_reason = reason[:500]
+            case.approval_type = "physician_call"
+            if screenshot_key:
+                case.auth_pdf_url = screenshot_key
+
+        await repo.create_audit_event(
+            db, case_id=case_id, actor="system",
+            action="state_change:PHYSICIAN_CALL_REQUIRED",
+            data={
+                "reason": reason[:500],
+                "portal_message": (portal_message or "")[:500],
+                "screenshot_key": screenshot_key,
+            },
+        )
+
+        # Billing event so call-worklist activity is auditable end-to-end.
+        if case:
+            await repo.create_execution_log(
+                db, event_type="PHYSICIAN_CALL_REQUIRED", case=case,
+                detail={
+                    "reason": reason[:200],
+                    "portal_message": (portal_message or "")[:200],
+                },
+            )
+
+        await db.commit()
+        logger.info(
+            f"Worker: case {case_id} → PHYSICIAN_CALL_REQUIRED "
+            f"(reason: {reason[:80]})"
+        )
+
+
 async def mark_case_no_auth_required(case_id: str, reason: str) -> None:
     """Mark a case as NO_AUTH_REQUIRED — DI pre-auth not needed for this member's plan.
 

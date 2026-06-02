@@ -26,6 +26,7 @@ from app.worker.helpers import (
     is_portal_error,
     mark_case_hold,
     mark_case_no_auth_review,
+    mark_case_physician_call_required,
     mark_case_submission_error,
     mark_case_complete,
     save_flow_checks,
@@ -139,6 +140,25 @@ async def process_case(event: dict) -> dict:
                 logger.warning(f"Worker/{worker_id}: pathway save failed (non-fatal): {pw_err}")
 
         # Step 4: Handle result
+        # v155 — physician-call cases share the broad "no auth required from us"
+        # signal but the rep's action is different (call physician, not just
+        # verify). Check this BEFORE the NO_AUTH branch so the routing wins.
+        if result.get("case_state") == "PHYSICIAN_CALL_REQUIRED":
+            reason = result.get("hold_reason",
+                "Treating physician must initiate Carelon Order Request")
+            screenshot_key = result.get("no_auth_screenshot_key")
+            portal_message = result.get("portal_message")
+            await mark_case_physician_call_required(
+                case_id, reason,
+                portal_message=portal_message,
+                screenshot_key=screenshot_key,
+            )
+            logger.info(
+                f"Worker/{worker_id}: case {case_id} → PHYSICIAN_CALL_REQUIRED: {reason}"
+            )
+            await navigate_to_homepage(worker_id)
+            return {"status": "physician_call_required", "reason": reason}
+
         if result.get("case_state") == "NO_AUTH_REQUIRED":
             reason = result.get("hold_reason", "No auth required per portal")
             screenshot_key = result.get("no_auth_screenshot_key")
