@@ -77,8 +77,33 @@ async def _ensure_session_direct(
                 url = session.page.url
                 if "Default.aspx" in url or "providerportal.com" in url:
                     if session.logged_in:
-                        logger.info(f"Worker/{worker_id}: reusing existing session ({age/60:.0f}m old)")
-                        return session
+                        # v156 — wedge check. The pre-v156 liveness check
+                        # passed on zombie pages: document.readyState would
+                        # resolve and the URL substring matched, but the page
+                        # was actually stuck on a modal or post-eligibility
+                        # transition. Re-using it caused all 3 retries to
+                        # hit identical errors. Verify the canonical "homepage
+                        # is interactive" signal — the member-search button.
+                        # 3s is generous for a healthy page (selector is
+                        # already rendered); only wedged pages will time out.
+                        try:
+                            await session.page.wait_for_selector(
+                                "#asPrimary_ctl00_BtnSearch",
+                                state="visible",
+                                timeout=3000,
+                            )
+                            logger.info(
+                                f"Worker/{worker_id}: reusing existing session "
+                                f"({age/60:.0f}m old)"
+                            )
+                            return session
+                        except Exception:
+                            logger.warning(
+                                f"Worker/{worker_id}: session wedged "
+                                "(BtnSearch missing) — recreating"
+                            )
+                            await _close_browser(worker_id)
+                            session = None
             except Exception as e:
                 logger.warning(f"Worker/{worker_id}: existing session dead ({e}), creating new")
                 await _close_browser(worker_id)

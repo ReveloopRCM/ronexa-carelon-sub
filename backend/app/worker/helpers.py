@@ -153,6 +153,15 @@ def is_transient_error(reason: str) -> bool:
         # Portal page-load failures (retryable)
         "provider search page did not load",
         "fax modal may be blocking",
+        # v156: explicitly transient browser-lifecycle errors that the
+        # pre-v156 list missed. Without these, cases like Tyler Tanjuatco
+        # (Element is not attached) went straight to permanent HOLD on
+        # attempt 1 instead of auto-requeueing with a fresh browser.
+        "element is not attached",
+        # v148 had cooldown rules for these but the corresponding
+        # transient match was missing — dead-code cooldown. Restored:
+        "could not select provider",
+        "facility continue",
     ]
     reason_lower = reason.lower()
     return any(p in reason_lower for p in transient_patterns)
@@ -241,25 +250,53 @@ async def mark_case_hold(case_id: str, hold_reason: str) -> None:
             job.exception_type = None
             job.exception_detail = None
 
-            # v148: cooldown for known portal-flake patterns where Carelon
-            # needs time to recover from a transient state. Without this,
-            # three back-to-back retries all hit the same flake window and
-            # the case exhausts to permanent HOLD even though the portal
-            # would have recovered after 1-2 minutes.
+            # v148/v156: cooldown for known transient patterns where the
+            # next retry should not fire immediately. Two buckets:
+            #
+            #   LONG (5 min) — Carelon portal flakes where the portal
+            #   itself is stuck on a post-eligibility / post-summary
+            #   transition. Recovery typically 1-2 minutes; 5 min gives
+            #   margin.
+            #
+            #   SHORT (60s) — v156 browser-lifecycle errors where the
+            #   browser is being torn down by /process-case's
+            #   close-on-error path. The cooldown lets the close +
+            #   relaunch complete before the next claim, avoiding a
+            #   race where attempt 2 lands while the prior browser is
+            #   still cleaning up. Cooldown is short because Fix #1
+            #   already guarantees a fresh browser; this just keeps
+            #   things tidy.
             from datetime import datetime, timedelta
             _PORTAL_FLAKE_PATTERNS = (
                 "provider search page",        # post-eligibility transition
                 "could not select provider",   # provider grid wait_for_selector
                 "facility continue failed",    # post-summary transition
             )
+            _BROWSER_LIFECYCLE_PATTERNS = (
+                "browser has been closed",       # Target/context/browser closed
+                "target page, context",          # same family
+                "element is not attached",       # DOM detached mid-operation
+                "frame was detached",            # iframe detached
+                "page.wait_for_selector",        # canonical selector-timeout shape
+            )
             is_portal_flake = any(p in reason_lower for p in _PORTAL_FLAKE_PATTERNS)
+            is_browser_lifecycle = (
+                not is_portal_flake
+                and any(p in reason_lower for p in _BROWSER_LIFECYCLE_PATTERNS)
+            )
             cooldown_until: "datetime | None" = None
+            cooldown_kind: str | None = None
             if is_portal_flake:
                 cooldown_until = datetime.utcnow() + timedelta(minutes=5)
+                cooldown_kind = "portal_flake_5min"
+                job.cooldown_until = cooldown_until
+            elif is_browser_lifecycle:
+                cooldown_until = datetime.utcnow() + timedelta(seconds=60)
+                cooldown_kind = "browser_lifecycle_60s"
                 job.cooldown_until = cooldown_until
             else:
                 # Reset any prior cooldown — non-flake transients retry
-                # immediately as before (browser blip, network reset, etc).
+                # immediately as before (one-off network blip, etc).
                 job.cooldown_until = None
 
             await repo.create_audit_event(
@@ -273,11 +310,18 @@ async def mark_case_hold(case_id: str, hold_reason: str) -> None:
                     "retry_state": retry_state.value,
                     "job_type": job.job_type,
                     "cooldown_until": cooldown_until.isoformat() if cooldown_until else None,
+                    "cooldown_kind": cooldown_kind,
                     "portal_flake": is_portal_flake,
+                    "browser_lifecycle": is_browser_lifecycle,
                 },
             )
             await db.commit()
-            cooldown_log = f", cooldown 5min until {cooldown_until.strftime('%H:%M:%S')}" if cooldown_until else ""
+            if cooldown_until and cooldown_kind == "portal_flake_5min":
+                cooldown_log = f", cooldown 5min until {cooldown_until.strftime('%H:%M:%S')}"
+            elif cooldown_until and cooldown_kind == "browser_lifecycle_60s":
+                cooldown_log = f", cooldown 60s until {cooldown_until.strftime('%H:%M:%S')}"
+            else:
+                cooldown_log = ""
             logger.info(
                 f"Worker: case {case_id} auto-requeued "
                 f"(attempt {current_attempt}/{max_attempts}, "

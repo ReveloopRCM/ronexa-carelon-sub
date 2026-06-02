@@ -208,18 +208,30 @@ async def process_case(event: dict) -> dict:
         except Exception:
             pass
 
-        # Only close browser if it's truly dead
-        browser_dead = "TargetClosedError" in error_msg or "browser has been closed" in error_msg
-        if browser_dead:
+        # v156: Force-close the browser on ANY portal error.
+        #
+        # Pre-v156 we only closed when the error string contained
+        # "TargetClosedError" or "browser has been closed". Other errors —
+        # ElementHandle detached, BtnSearch timeout, navigation stuck —
+        # left the browser open, then `navigate_to_homepage` would
+        # "succeed" against a wedged page (the 15s timeout outlasts
+        # most stalls), and attempt 2 would reuse the same broken
+        # browser. Production: 17 lifecycle-related HOLDs in a 4-hour
+        # window (Kathryn Harris / Tyler Tanjuatco / Willie Parks /
+        # Jay Stephens / Shawn Adams — all 3/3 exhausted on identical
+        # errors). The cost of closing on every error is one extra
+        # Carelon login (~20s) per failure — vastly cheaper than three
+        # retries against a zombie browser.
+        try:
             await close_worker_browser(worker_id)
-            logger.info(f"Worker/{worker_id}: browser dead — closed for re-login")
-        else:
-            nav_ok = await navigate_to_homepage(worker_id)
-            if not nav_ok:
-                logger.warning(f"Worker/{worker_id}: home nav failed after error — closing browser")
-                await close_worker_browser(worker_id)
-            else:
-                logger.info(f"Worker/{worker_id}: recovered to home after error")
+            logger.info(
+                f"Worker/{worker_id}: browser closed after error — "
+                "next claim re-logs in"
+            )
+        except Exception as ce:
+            logger.warning(
+                f"Worker/{worker_id}: close after error failed (non-fatal): {ce}"
+            )
 
         return {
             "status": "hold",
@@ -319,8 +331,21 @@ async def finalize_case(event: dict) -> dict:
 
     except Exception as e:
         logger.error(f"Worker/{worker_id}: finalize error for {case_id}: {e}")
-        if is_portal_error(str(e)):
+        # v156: Force-close on ANY finalize error. Same rationale as
+        # /process-case — eliminates zombie-browser reuse across submit
+        # retries. is_portal_error() was too narrow (only matched a
+        # specific pattern list); broaden here so attempt 2 always gets
+        # a fresh login regardless of error wording.
+        try:
             await close_worker_browser(worker_id)
+            logger.info(
+                f"Worker/{worker_id}: browser closed after finalize error — "
+                "next claim re-logs in"
+            )
+        except Exception as ce:
+            logger.warning(
+                f"Worker/{worker_id}: close after finalize error failed (non-fatal): {ce}"
+            )
         return {"status": "error", "error": str(e)}
 
 
