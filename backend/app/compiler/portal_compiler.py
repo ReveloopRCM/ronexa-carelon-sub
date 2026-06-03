@@ -615,6 +615,30 @@ class PortalCompiler:
             if auto_selected:
                 # Single result — portal auto-selected, extract eligibility directly
                 elig = await wf.extract_eligibility_details()
+                # v157 — Order Summary short-circuit. Carelon redirects directly
+                # to a standalone PrintActivity Order Summary view (no Effective
+                # text, no two-section eligibility layout) when the imaging
+                # center can't submit. v155's Sites A/B never fire on that view
+                # because di_requires_auth defaults to True. Pre-v157 these
+                # cases cascaded to "Select DI failed" HOLDs that masqueraded
+                # as portal flakes. Verified from prod HAR.
+                if elig.get("data", {}).get("page_type") == "order_summary":
+                    blob_key = await _capture_no_auth_summary(session.page, case)
+                    if elig["data"].get("physician_initiation_required"):
+                        return {
+                            "case_state": "PHYSICIAN_CALL_REQUIRED",
+                            "hold_reason": (
+                                "Treating physician must initiate Carelon Order "
+                                "Request — imaging center cannot submit. Call physician office."
+                            ),
+                            "no_auth_screenshot_key": blob_key,
+                            "portal_message": elig["data"]["ineligible_text"],
+                        }
+                    return {
+                        "case_state": "NO_AUTH_REQUIRED",
+                        "hold_reason": "DI does not require pre-authorization for this member's plan",
+                        "no_auth_screenshot_key": blob_key,
+                    }
                 if elig.get("data"):
                     result["eligibility"] = elig["data"]
                     eff_date = elig["data"].get("effective_date")
@@ -664,6 +688,28 @@ class PortalCompiler:
 
                     # Extract eligibility for this plan
                     elig = await wf.extract_eligibility_details()
+                    # v157 — Order Summary short-circuit. Same rationale as the
+                    # auto_selected branch above: when Carelon redirects to the
+                    # PrintActivity Order Summary view, no further row iteration
+                    # is possible (and isn't needed — the determination is
+                    # already final for the selected member/plan).
+                    if elig.get("data", {}).get("page_type") == "order_summary":
+                        blob_key = await _capture_no_auth_summary(session.page, case)
+                        if elig["data"].get("physician_initiation_required"):
+                            return {
+                                "case_state": "PHYSICIAN_CALL_REQUIRED",
+                                "hold_reason": (
+                                    "Treating physician must initiate Carelon Order "
+                                    "Request — imaging center cannot submit. Call physician office."
+                                ),
+                                "no_auth_screenshot_key": blob_key,
+                                "portal_message": elig["data"]["ineligible_text"],
+                            }
+                        return {
+                            "case_state": "NO_AUTH_REQUIRED",
+                            "hold_reason": "DI does not require pre-authorization for this member's plan",
+                            "no_auth_screenshot_key": blob_key,
+                        }
                     if not elig.get("data"):
                         logger.warning(f"No eligibility data for result {idx}")
                         # Navigate back to try next

@@ -325,10 +325,76 @@ class WebFormsClient:
           - Product/Carrier, Product Group, Employer Group ID
           - Effective dates for the current plan
 
+        v157 — fast pre-check for Order Summary view. Some cases skip the
+        eligibility page entirely: Carelon's portal redirects directly to
+        a standalone Order Summary view (rendered by the PrintActivity
+        user control) when the imaging center cannot submit (treating
+        physician must initiate). That view has no `Effective` text, so
+        the 30s wait below times out; the JS extractor then finds no
+        "do not require Pre-Authorization" section and returns
+        di_requires_auth=True (default). The case then cascades to a
+        downstream "Select DI failed" HOLD that looks like a portal flake
+        but is actually a physician-call signal we missed.
+
+        Verified from prod HAR: this page has `#PrintActivity_ctl00_lblIneligible`
+        but NO `Effective` text and NO eligibility two-section layout.
+        Detecting that one element here lets us short-circuit cleanly.
+
         Returns:
             {"ok": True, "data": {"effective_date": ..., "plan_info": ..., ...}}
+
+        For the Order Summary short-circuit, returns:
+            {"ok": True, "data": {
+                "page_type": "order_summary",
+                "ineligible_text": str,
+                "physician_initiation_required": bool,
+                "di_requires_auth": False,
+            }}
         """
         logger.info("Extracting eligibility details from service category page")
+
+        # v157 pre-check — Order Summary detection BEFORE the 30s Effective wait.
+        # If the portal redirected here (physician-call or hard no-auth),
+        # bail out fast with a structured signal the compiler can route on.
+        try:
+            ineligible_text = await self.page.evaluate(
+                """() => {
+                    const sel = [
+                        '#PrintActivity_ctl00_lblIneligible',
+                        '#asPrimary_ctl00_lblIneligible',
+                        'span[id$="_lblIneligible"]',
+                    ];
+                    for (const s of sel) {
+                        const el = document.querySelector(s);
+                        if (el && el.textContent && el.textContent.trim()) {
+                            return el.textContent.trim();
+                        }
+                    }
+                    return null;
+                }"""
+            )
+            if ineligible_text:
+                low = ineligible_text.lower()
+                physician_call = (
+                    "treating physician about initiating" in low
+                    or "carelon order number may be required" in low
+                    or "contact the treating physician" in low
+                )
+                logger.info(
+                    f"Order Summary view detected — physician_call={physician_call} "
+                    f"text={ineligible_text[:120]!r}"
+                )
+                return {
+                    "ok": True,
+                    "data": {
+                        "page_type": "order_summary",
+                        "ineligible_text": ineligible_text[:400],
+                        "physician_initiation_required": physician_call,
+                        "di_requires_auth": False,
+                    },
+                }
+        except Exception as e:
+            logger.warning(f"v157 Order Summary pre-check failed (non-fatal): {e}")
 
         # Wait for page to have member info loaded — eligibility page renders
         # post-postback and has been observed to take 15-25s under Carelon load.
