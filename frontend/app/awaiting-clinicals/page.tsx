@@ -2,9 +2,13 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { listQueue } from "@/lib/api";
+import { listQueue, listCases } from "@/lib/api";
 
-type TabLevel = "l1" | "l2" | "awaiting" | "clinical_review";
+// v160: "call" tab surfaces physician-call cases here too — reps spend
+// most of their time on this page while clinicals trickle in, so they
+// need to see and pick up call work without context-switching to
+// /cases. Same data source as the Cases > Call Worklist tab.
+type TabLevel = "l1" | "l2" | "awaiting" | "call" | "clinical_review";
 
 export default function AwaitingClinicalsPage() {
   const [tab, setTab] = useState<TabLevel>("l1");
@@ -12,6 +16,7 @@ export default function AwaitingClinicalsPage() {
   const [l1Count, setL1Count] = useState(0);
   const [l2Count, setL2Count] = useState(0);
   const [awaitingCount, setAwaitingCount] = useState(0);
+  const [callCount, setCallCount] = useState(0);
   const [clinicalReviewCount, setClinicalReviewCount] = useState(0);
   const [loading, setLoading] = useState(true);
 
@@ -24,21 +29,31 @@ export default function AwaitingClinicalsPage() {
   async function loadQueue() {
     try {
       // Fetch all tabs in parallel for counts
-      const [l1, l2, awaiting, clinicalReview] = await Promise.all([
+      const [l1, l2, awaiting, call, clinicalReview] = await Promise.all([
         listQueue(50, 1, "order"),
         listQueue(50, 2, "order"),
         listQueue(50, "awaiting_clinicals"),
+        // v160 — pulls physician-call cases via the paginated /api/cases
+        // envelope (v154). order=recent so newest-flagged-for-call comes
+        // first; reps work top-down.
+        listCases({
+          state: "PHYSICIAN_CALL_REQUIRED",
+          order_by: "recent",
+          limit: 50,
+        }),
         listQueue(50, "clinical"),
       ]);
       setL1Count(l1.length);
       setL2Count(l2.length);
       setAwaitingCount(awaiting.length);
+      setCallCount(call.total);
       setClinicalReviewCount(clinicalReview.length);
 
       // Set current tab's queue
       if (tab === "l1") setQueue(l1);
       else if (tab === "l2") setQueue(l2);
       else if (tab === "awaiting") setQueue(awaiting);
+      else if (tab === "call") setQueue(call.items);
       else setQueue(clinicalReview);
     } catch (err) {
       console.error(err);
@@ -56,6 +71,8 @@ export default function AwaitingClinicalsPage() {
       ? "Order-only cases in final review. Confirm answers and submit to Carelon portal."
       : tab === "clinical_review"
       ? "Signature-replayed cases where portal algorithm approved or Gold Card detected. Verify with clinicals and confirm or reject."
+      : tab === "call"
+      ? "Cases where Carelon says the treating physician must initiate the order. Imaging center can't submit. Call the physician's office to get the auth started."
       : "Low-confidence order cases parked for clinical notes. Upload clinicals to re-run with full context.";
 
   const emptyMessage =
@@ -65,6 +82,8 @@ export default function AwaitingClinicalsPage() {
       ? "No order cases in L2 review."
       : tab === "clinical_review"
       ? "No cases in clinical review."
+      : tab === "call"
+      ? "No physician-call cases — all caught up."
       : "No cases awaiting clinical upload.";
 
   return (
@@ -122,6 +141,21 @@ export default function AwaitingClinicalsPage() {
           )}
         </button>
         <button
+          onClick={() => setTab("call")}
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition ${
+            tab === "call"
+              ? "border-orange-600 text-orange-700"
+              : "border-transparent text-gray-500 hover:text-gray-700"
+          }`}
+        >
+          📞 Call Worklist
+          {callCount > 0 && (
+            <span className="ml-2 bg-orange-200 text-orange-900 text-xs px-2 py-0.5 rounded-full">
+              {callCount}
+            </span>
+          )}
+        </button>
+        <button
           onClick={() => setTab("clinical_review")}
           className={`px-4 py-2 text-sm font-medium border-b-2 transition ${
             tab === "clinical_review"
@@ -149,13 +183,17 @@ export default function AwaitingClinicalsPage() {
             <Link
               key={c.id}
               href={
-                tab === "awaiting"
+                tab === "awaiting" || tab === "call"
                   ? `/cases/${c.id}`
                   : tab === "clinical_review"
                   ? `/queue/${c.id}`
                   : `/queue/${c.id}?level=${tab === "l1" ? 1 : 2}`
               }
-              className="block border rounded p-4 hover:border-teal-500 transition"
+              className={`block border rounded p-4 transition ${
+                tab === "call"
+                  ? "hover:border-orange-500 hover:bg-orange-50"
+                  : "hover:border-teal-500"
+              }`}
             >
               <div className="flex items-center justify-between">
                 <div>
@@ -212,6 +250,11 @@ export default function AwaitingClinicalsPage() {
                   {tab === "awaiting" && (
                     <span className="ml-2 bg-amber-100 text-amber-700 text-xs px-2 py-0.5 rounded">
                       Needs Clinicals
+                    </span>
+                  )}
+                  {tab === "call" && (
+                    <span className="ml-2 bg-orange-200 text-orange-900 text-xs px-2 py-0.5 rounded">
+                      📞 Call Physician
                     </span>
                   )}
                   {tab === "clinical_review" && (
