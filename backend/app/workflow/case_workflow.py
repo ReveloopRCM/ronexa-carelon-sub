@@ -169,7 +169,10 @@ async def _run_case_workflow(
 
     # ── Non-review outcomes → return immediately ──
     # http_server handles state transitions for these:
-    #   - "no_auth_review" → mark_case_no_auth_review() → IN_REVIEW (already set)
+    #   - "no_auth_review" → mark_case_no_auth_review() → L1_REVIEW (already set)
+    #   - "physician_call_required" → mark_case_physician_call_required()
+    #       → PHYSICIAN_CALL_REQUIRED (already set; v158 bug fix — was
+    #       falling through and overwritten by save_questions/L1_REVIEW)
     #   - "hold" → mark_case_hold() → HOLD (already set)
     #   - "auto_approved" → zero-question pathway, needs state transition here
     status = first_pass_result.get("status", "")
@@ -181,7 +184,7 @@ async def _run_case_workflow(
         )
         return first_pass_result
 
-    if status in ("hold", "error", "no_auth_review"):
+    if status in ("hold", "error", "no_auth_review", "physician_call_required"):
         return first_pass_result
 
     # ── Auto-submit: skip review, finalize in same session ──

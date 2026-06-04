@@ -144,7 +144,10 @@ async def _run_order_workflow(
     # ── Non-review outcomes → return immediately ──
     # NO_AUTH, GOLD_CARD, and auto-approved are detected during the same portal run.
     # http_server already handled state transitions for these:
-    #   - "no_auth_review" → mark_case_no_auth_review() → IN_REVIEW
+    #   - "no_auth_review" → mark_case_no_auth_review() → L1_REVIEW
+    #   - "physician_call_required" → mark_case_physician_call_required()
+    #       → PHYSICIAN_CALL_REQUIRED (v158 bug fix — was falling through
+    #       and overwritten by save_order_questions/WAITING_CLINICALS)
     #   - "hold" → mark_case_hold() → HOLD
     #   - "auto_approved" → zero-question pathway, needs state transition here
     status = first_pass_result.get("status", "")
@@ -157,7 +160,7 @@ async def _run_order_workflow(
         )
         return first_pass_result
 
-    if status in ("hold", "error", "no_auth_review"):
+    if status in ("hold", "error", "no_auth_review", "physician_call_required"):
         return first_pass_result
 
     # ── Save questions with order-specific routing ──
