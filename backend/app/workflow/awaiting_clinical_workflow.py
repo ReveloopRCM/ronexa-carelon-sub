@@ -134,7 +134,17 @@ async def _run_awaiting_workflow(
         await ctx.run("complete_job", _complete_job, max_attempts=3, args=(case_id,))
         return first_pass_result
 
-    if status == "no_auth_required":
+    # v159: physician_call_required must early-return so the state set by
+    # mark_case_physician_call_required (PHYSICIAN_CALL_REQUIRED) is not
+    # overwritten by save_questions/CLINICAL_REVIEW below. Same root cause
+    # as v158 in case_workflow/order_workflow — re-runs triggered by
+    # clinical-upload would otherwise drop the case out of Call Worklist.
+    #
+    # Also fixed: the prior "no_auth_required" string check was dead code —
+    # http_server emits status="no_auth_review" (see http_server.py:147,
+    # the "→ IN_REVIEW (no_auth)" branch). Matching the actual string now
+    # so true-no-auth cases from this workflow path also stop cleanly.
+    if status in ("no_auth_review", "no_auth_required", "physician_call_required"):
         await ctx.run("complete_job", _complete_job, max_attempts=3, args=(case_id,))
         return first_pass_result
 

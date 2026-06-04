@@ -35,27 +35,34 @@ EARLY_RETURN_STATUSES = {
 }
 
 
-def _early_return_tuple_from(module) -> set[str]:
-    """Pull the early-return status tuple out of the module's source.
+def _all_early_return_tuples_from(module) -> list[set[str]]:
+    """Pull ALL early-return status tuples out of the module's source.
 
-    Greps the source for `status in (...)` and parses out the literals.
-    Brittle, but the point is to *catch a code change* — if someone rewrites
-    the check shape, this test will (correctly) fail and force them to
-    update the test along with the code.
+    Some workflows (AwaitingClinicalWorkflow) have multiple `status in (...)`
+    guards because hold/error reset to PENDING_NOTES while no-auth /
+    physician-call just complete the job — different downstream actions,
+    same early-return semantics. We want any guard to be inspectable.
     """
     src = inspect.getsource(module)
-    # Find the tuple literal in `status in ("...", "...", ...)`
     import re
-    match = re.search(
+    matches = re.findall(
         r'status\s+in\s+\(\s*((?:"[^"]+"\s*,?\s*)+)\)',
         src,
     )
-    assert match, (
-        f"Could not find `status in (...)` early-return guard in "
+    assert matches, (
+        f"Could not find any `status in (...)` early-return guard in "
         f"{module.__name__}. Did the structure change?"
     )
-    literals = re.findall(r'"([^"]+)"', match.group(1))
-    return set(literals)
+    return [set(re.findall(r'"([^"]+)"', m)) for m in matches]
+
+
+def _early_return_tuple_from(module) -> set[str]:
+    """Union of all early-return tuples in the module — what statuses the
+    module collectively early-returns on. Used for the v158 single-guard
+    workflows (case_workflow, order_workflow) and just unions correctly
+    for the multi-guard AwaitingClinicalWorkflow (v159)."""
+    tuples = _all_early_return_tuples_from(module)
+    return set().union(*tuples)
 
 
 def test_case_workflow_early_returns_on_physician_call_required():
@@ -84,6 +91,27 @@ def test_order_workflow_early_returns_on_physician_call_required():
         f"order_workflow early-return tuple is missing required statuses. "
         f"Found: {sorted(tup)}, Required: {sorted(EARLY_RETURN_STATUSES)}, "
         f"Missing: {sorted(EARLY_RETURN_STATUSES - tup)}"
+    )
+
+
+def test_awaiting_clinical_workflow_early_returns_on_physician_call_required():
+    """v159 — AwaitingClinicalWorkflow (the re-run path triggered when
+    clinical notes arrive) must also early-return on physician_call_required.
+    Without this, save_questions / set_clinical_review run downstream and
+    overwrite the PHYSICIAN_CALL_REQUIRED state with CLINICAL_REVIEW.
+
+    Also pins the v159 dead-code fix: the workflow used to check for
+    `"no_auth_required"` (a string http_server never emits) instead of
+    the actual `"no_auth_review"` string. Both must be matched now so
+    true-no-auth re-runs stop cleanly too."""
+    from app.workflow import awaiting_clinical_workflow
+
+    tup = _early_return_tuple_from(awaiting_clinical_workflow)
+    required = EARLY_RETURN_STATUSES | {"no_auth_review"}
+    assert required.issubset(tup), (
+        f"awaiting_clinical_workflow early-return tuple is missing required "
+        f"statuses. Found: {sorted(tup)}, Required: {sorted(required)}, "
+        f"Missing: {sorted(required - tup)}"
     )
 
 
