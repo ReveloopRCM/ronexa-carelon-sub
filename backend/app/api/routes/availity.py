@@ -13,7 +13,7 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_db
@@ -37,6 +37,24 @@ AVAILITY_KEYS = [
     "availity_auto_send_interval_minutes",
 ]
 AVAILITY_ENCRYPTED_KEYS = {"availity_password"}
+
+AVAILITY_WORKLIST_FILTERS = [
+    ExceptionType.STAT_PENDED,
+    ExceptionType.RPO_NOT_FOUND,
+    ExceptionType.MED_NECESSITY,
+    ExceptionType.MEMBER_NOT_FOUND,
+    ExceptionType.DUPLICATE_AUTH,
+    ExceptionType.PORTAL_ERROR,
+    ExceptionType.PHONE_MISSING,
+    ExceptionType.REFERRING_NPI_MISSING,
+    ExceptionType.ELIGIBILITY_EXPIRED,
+    ExceptionType.NO_AUTH_REQUIRED,
+    ExceptionType.ALREADY_WORKED,
+]
+
+
+def _worklist_label(exception_type: ExceptionType) -> str:
+    return exception_type.value.replace("_", " ").title()
 
 
 async def _get_setting(db: AsyncSession, key: str, default=None):
@@ -119,6 +137,97 @@ async def update_availity_settings(body: dict, db: AsyncSession = Depends(get_db
 async def test_availity_connection():
     """Attempt to authenticate against Availity."""
     return await availity_svc.test_connection()
+
+
+# ── Availity worklist filter endpoints ──
+
+
+@router.get("/worklist/filters")
+async def get_availity_worklist_filters(db: AsyncSession = Depends(get_db)):
+    """Return all supported Availity worklist filters, including zero-count filters."""
+    count_result = await db.execute(
+        select(
+            SubmissionJob.exception_type,
+            func.count(SubmissionJob.id),
+        )
+        .where(SubmissionJob.exception_type.is_not(None))
+        .group_by(SubmissionJob.exception_type)
+    )
+
+    counts = {
+        exception_type.value if hasattr(exception_type, "value") else str(exception_type): count
+        for exception_type, count in count_result.all()
+    }
+
+    return [
+        {
+            "key": exception_type.value,
+            "label": _worklist_label(exception_type),
+            "count": counts.get(exception_type.value, 0),
+        }
+        for exception_type in AVAILITY_WORKLIST_FILTERS
+    ]
+
+
+@router.get("/worklist")
+async def get_availity_worklist(
+    exception_type: ExceptionType | None = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return Availity worklist rows filtered by exception_type."""
+    offset = (page - 1) * page_size
+
+    conditions = []
+    if exception_type is not None:
+        conditions.append(SubmissionJob.exception_type == exception_type)
+    else:
+        conditions.append(SubmissionJob.exception_type.is_not(None))
+
+    total_result = await db.execute(
+        select(func.count(SubmissionJob.id))
+        .join(Case, SubmissionJob.case_id == Case.id)
+        .where(and_(*conditions))
+    )
+    total = total_result.scalar_one()
+
+    result = await db.execute(
+        select(Case, SubmissionJob)
+        .join(SubmissionJob, SubmissionJob.case_id == Case.id)
+        .where(and_(*conditions))
+        .order_by(SubmissionJob.created_at.desc())
+        .offset(offset)
+        .limit(page_size)
+    )
+
+    rows = []
+    for case, job in result.all():
+        rows.append({
+            "job_id": job.id,
+            "case_id": case.id,
+            "exam_id": case.exam_id,
+            "first_name": case.first_name,
+            "last_name": case.last_name,
+            "dob": case.dob,
+            "policy_num": case.policy_num,
+            "patient_phone": case.patient_phone,
+            "referring_npi": case.referring_npi,
+            "valid_from": case.valid_from,
+            "valid_through": case.valid_through,
+            "status": job.status.value if hasattr(job.status, "value") else job.status,
+            "exception_type": job.exception_type.value if job.exception_type else None,
+            "exception_detail": job.exception_detail,
+            "created_at": job.created_at.isoformat() if job.created_at else None,
+        })
+
+    return {
+        "rows": rows,
+        "count": len(rows),
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
 
 
 # ── Job proxy endpoints ──
