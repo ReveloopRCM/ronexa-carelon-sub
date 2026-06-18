@@ -125,11 +125,13 @@ jobs:
           ./deploy.sh "$TARGET"
 
       # ── Smoke check — backend health endpoint reachable post-deploy ──
+      # The backend exposes /api/health (not /health). This is the same
+      # endpoint deploy.sh's own health-check block hits — see line 432.
       - name: Post-deploy smoke
         run: |
           ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes \
             ${{ env.SSH_USER }}@${{ env.ORCH_IP }} \
-            'curl -fsS http://localhost:8000/health || (echo "Backend health check failed"; exit 1)'
+            'curl -fsS http://localhost:8000/api/health || (echo "Backend health check failed"; exit 1)'
 
       - name: Summary
         if: always()
