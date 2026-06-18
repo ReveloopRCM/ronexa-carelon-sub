@@ -1,0 +1,76 @@
+name: test
+
+# Test gate: runs on every PR + every push to main.
+# `deploy.yml` waits on this workflow before touching prod.
+#
+# No secrets needed — runs purely on the public test surface.
+# Live-portal tests (test_portal_live, test_full_submission,
+# test_facility_search, test_finalize_pass, test_provider_search_debug)
+# are excluded because they need Playwright + real Carelon credentials
+# that don't belong on a CI runner.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Single workflow run per branch; cancel older runs on new pushes.
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-tests:
+    name: backend pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run pytest
+        working-directory: backend
+        # Same exclusion list as local validation — these need real
+        # Carelon access and would always fail in CI.
+        run: |
+          python -m pytest tests/ -v \
+            --ignore=tests/test_portal_live.py \
+            --ignore=tests/test_full_submission.py \
+            --ignore=tests/test_facility_search.py \
+            --ignore=tests/test_finalize_pass.py \
+            --ignore=tests/test_provider_search_debug.py
+
+  frontend-build:
+    name: frontend build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build

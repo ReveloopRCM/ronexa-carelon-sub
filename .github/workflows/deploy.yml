@@ -1,0 +1,141 @@
+name: deploy
+
+# Production deploy: triggered on every push to main, gated on tests.
+#
+# What it does:
+#   1. Waits for the `test` workflow on the same commit to succeed.
+#   2. Signs in to Azure via OIDC federation (no client secret stored).
+#   3. Builds backend + frontend Docker images and pushes to ACR.
+#   4. SSHes into the orchestrator and runs `./deploy.sh all` with
+#      CI=true (skips interactive prompts, auto-runs migrations,
+#      auto-restarts WorkerLoops).
+#
+# Manual override: from the Actions tab → "deploy" → "Run workflow"
+# you can re-deploy a specific commit, or skip (uncheck "run") to
+# pause deploys without disabling the workflow.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "deploy.sh target (all | backend | frontend | workers | restart)"
+        required: false
+        default: "auto"
+
+# Only one deploy at a time. If a second commit lands during a deploy,
+# it queues — never two concurrent prod mutations.
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+permissions:
+  id-token: write       # required for OIDC token exchange
+  contents: read
+
+jobs:
+  wait-for-tests:
+    name: wait for test gate
+    runs-on: ubuntu-latest
+    # Skip when triggered manually — operator has already decided to ship.
+    if: github.event_name == 'push'
+    steps:
+      - name: Wait for test workflow on this SHA
+        uses: lewagon/wait-on-check-action@v1.3.4
+        with:
+          ref: ${{ github.sha }}
+          # These check names must match the `name:` of each job in test.yml.
+          check-name: backend pytest
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-interval: 10
+          allowed-conclusions: success
+      - name: Wait for frontend build check
+        uses: lewagon/wait-on-check-action@v1.3.4
+        with:
+          ref: ${{ github.sha }}
+          check-name: frontend build
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-interval: 10
+          allowed-conclusions: success
+
+  deploy:
+    name: build + push + deploy
+    needs: [wait-for-tests]
+    # `needs` only blocks when wait-for-tests runs. For workflow_dispatch
+    # it's skipped (if: github.event_name == 'push'), so we explicitly
+    # allow this job to run regardless of its predecessor's status when
+    # the trigger is manual.
+    if: |
+      always() &&
+      (github.event_name == 'workflow_dispatch' ||
+       needs.wait-for-tests.result == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ACR: ronexaacr.azurecr.io
+      ORCH_IP: 20.29.73.195
+      SSH_USER: ronexa
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # deploy.sh uses git history for change detection
+
+      # ── Azure OIDC sign-in (no client secret stored anywhere) ──
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # ── Docker login to ACR using the OIDC-obtained token ──
+      - name: ACR login
+        run: az acr login --name ronexaacr
+
+      # ── SSH access for deploy.sh's ssh calls to orchestrator + workers ──
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          echo "${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          # Quick reachability check; surfaces clear error if a VM is unreachable
+          for ip in 20.29.73.195 172.202.22.112 74.249.202.85 20.106.37.51; do
+            ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o ConnectTimeout=8 \
+              ${{ env.SSH_USER }}@$ip "hostname" || { echo "FAIL: $ip unreachable"; exit 1; }
+          done
+
+      # ── Buildx for cross-arch image build (VMs are linux/amd64) ──
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ── The deploy itself ──
+      # CI=true triggers the auto-migrate + auto-WorkerLoop-restart paths
+      # we added to deploy.sh. Target defaults to "auto" so deploy.sh's
+      # change detection picks just what shipped.
+      - name: Run deploy.sh
+        env:
+          CI: "true"
+        run: |
+          chmod +x ./deploy.sh
+          TARGET="${{ github.event.inputs.target || 'auto' }}"
+          ./deploy.sh "$TARGET"
+
+      # ── Smoke check — backend health endpoint reachable post-deploy ──
+      - name: Post-deploy smoke
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes \
+            ${{ env.SSH_USER }}@${{ env.ORCH_IP }} \
+            'curl -fsS http://localhost:8000/health || (echo "Backend health check failed"; exit 1)'
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### Deploy summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Commit: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Trigger: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Status: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY

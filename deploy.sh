@@ -45,6 +45,13 @@ WORKFLOW_FILES=(
 
 TARGET="${1:-auto}"
 
+# CI mode — set CI=true (or any non-empty CI env var) to:
+#  - skip the uncommitted-changes prompt (CI has a clean checkout)
+#  - auto-run `alembic upgrade head` on the orchestrator
+#  - auto-restart WorkerLoops via Restate API after deploy
+# Local human operators keep the existing interactive behavior by default.
+CI="${CI:-false}"
+
 # ════════════════════════════════════════════════════════════════════
 # Section 2: Helpers
 # ════════════════════════════════════════════════════════════════════
@@ -188,6 +195,10 @@ preflight_checks() {
   log_step "Deploying commit: ${head_msg}"
 
   if [ "${has_warnings}" = true ]; then
+    if [ "${CI}" != "false" ]; then
+      log_err "Uncommitted changes detected in CI mode — refusing to deploy."
+      exit 1
+    fi
     echo ""
     read -p "Continue with deploy despite warnings? (y/N) " -n 1 -r
     echo ""
@@ -756,8 +767,43 @@ echo "  Deploy complete"
 echo "═══════════════════════════════════════"
 echo ""
 
-# Post-deploy reminders
-if [[ "${TARGET}" =~ ^(auto|backend|all)$ ]]; then
+# CI mode — auto-run the post-deploy steps that human operators do manually.
+# Skipped in interactive mode (you might want to inspect first / batch migrations).
+if [[ "${TARGET}" =~ ^(auto|backend|all)$ ]] && [ "${CI}" != "false" ]; then
+  log_step "CI mode — running post-deploy steps automatically ..."
+
+  log_step "  Applying any pending alembic migrations ..."
+  run_on_orch "docker exec backend-api alembic upgrade head 2>&1 | tail -8" || log_warn "  migration step returned non-zero"
+
+  log_step "  Re-arming WorkerLoops via Restate API ..."
+  run_on_orch "docker exec backend-api python3 -c \"
+import asyncio, httpx
+from sqlalchemy import select
+from app.db.database import async_session_factory
+from app.db.models import WorkerAccount
+from app.core.settings import settings as env_settings
+
+async def main():
+    async with async_session_factory() as db:
+        result = await db.execute(select(WorkerAccount).where(WorkerAccount.is_active == True))
+        workers = result.scalars().all()
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        for w in workers:
+            r = await client.post(
+                f'{env_settings.RESTATE_URL}/WorkerLoop/{w.container_id}/start/send',
+                json={'max_cases': None, 'job_type': w.job_type or 'FIRST_PASS'},
+                headers={'Content-Type': 'application/json'},
+            )
+            print(f'  {w.container_id} ({w.job_type}): {r.status_code}')
+asyncio.run(main())
+\"" || log_warn "  WorkerLoop restart returned non-zero"
+
+  log_ok "Post-deploy auto-steps complete"
+  echo ""
+fi
+
+# Post-deploy reminders (interactive mode only)
+if [[ "${TARGET}" =~ ^(auto|backend|all)$ ]] && [ "${CI}" = "false" ]; then
   echo -e "${YELLOW}Post-deploy checklist:${NC}"
   echo "  1. Run migrations:  ssh ${SSH_USER}@${ORCH_IP} 'docker exec backend-api alembic upgrade head'"
   echo "  2. Start WorkerLoops if they were killed (check Restate admin)"
