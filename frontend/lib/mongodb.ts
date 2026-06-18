@@ -16,7 +16,11 @@ export async function connectToDatabase() {
   }
 
   try {
-    const client = new MongoClient(MONGODB_URI);
+    // The module-level `if (!MONGODB_URI) throw` above guarantees this is
+    // defined by the time any caller reaches here, but TS doesn't carry
+    // narrowing across the closure boundary into this function. The `!`
+    // makes the guarantee explicit so `next build` typechecks.
+    const client = new MongoClient(MONGODB_URI!);
     await client.connect();
     const db = client.db(MONGODB_DB_NAME);
 

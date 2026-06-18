@@ -40,6 +40,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          # Test-only deps that aren't shipped in the production image.
+          # Versions match what's in conftest.py / existing pyproject. Add
+          # to requirements.txt later if we move to a unified dep list.
+          pip install pytest pytest-asyncio aiosqlite
 
       - name: Run pytest
         working-directory: backend
