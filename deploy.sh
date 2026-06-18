@@ -70,6 +70,15 @@ log_err()   { echo -e "${RED}✗${NC} $*"; }
 # Run a command on the orchestrator VM, return clean stdout only
 run_on_orch() {
   local scripts="$1"
+  # v161 CI/CD: when CI=true (GitHub Actions runner), use SSH directly.
+  # The runner has the deploy keypair + known_hosts secrets installed
+  # and the AcrPush-only SP doesn't carry the VM run-command permission.
+  # Interactive operators keep az vm run-command — works on any laptop
+  # that's az logged in without needing an SSH config.
+  if [ "${CI}" != "false" ]; then
+    ssh ${SSH_OPTS} "${SSH_USER}@${ORCH_IP}" "${scripts}" 2>/dev/null || { log_err "Failed to reach ${ORCH_VM} via SSH"; return 1; }
+    return
+  fi
   local result
   result=$(az vm run-command invoke \
     --resource-group "${RG}" --name "${ORCH_VM}" \
@@ -103,6 +112,23 @@ except Exception:
 run_on_worker() {
   local vm="$1"
   local scripts="$2"
+  # v161 CI/CD: same SSH-in-CI rationale as run_on_orch above.
+  if [ "${CI}" != "false" ]; then
+    # Map vm-name → IP from the WORKER_VMS/WORKER_IPS arrays declared above.
+    local ip=""
+    local i
+    for i in "${!WORKER_VMS[@]}"; do
+      if [ "${WORKER_VMS[$i]}" = "${vm}" ]; then
+        ip="${WORKER_IPS[$i]}"
+        break
+      fi
+    done
+    if [ -z "${ip}" ]; then
+      log_err "No IP mapping found for worker VM ${vm}"; return 1
+    fi
+    ssh ${SSH_OPTS} "${SSH_USER}@${ip}" "${scripts}" 2>/dev/null || { log_err "Failed to reach ${vm} via SSH"; return 1; }
+    return
+  fi
   local result
   result=$(az vm run-command invoke \
     --resource-group "${RG}" --name "${vm}" \
